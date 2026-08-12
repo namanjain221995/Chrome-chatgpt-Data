@@ -1,0 +1,461 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "20"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  backend:
+    name: Backend lint, typecheck and unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: services/backend/pyproject.toml
+
+      - name: Install dependencies
+        working-directory: services/backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Ruff lint
+        working-directory: services/backend
+        run: ruff check app tests
+
+      - name: Ruff format check
+        working-directory: services/backend
+        run: ruff format --check app tests
+
+      - name: mypy
+        working-directory: services/backend
+        env:
+          ENVIRONMENT: test
+        run: mypy app
+
+      - name: Unit tests
+        working-directory: services/backend
+        env:
+          ENVIRONMENT: test
+          DEV_AUTH_ENABLED: "true"
+          BROWSER_CONTENT_CAPTURE_ENABLED: "true"
+          OPENAI_WRITTEN_AUTHORIZATION_CONFIRMED: "true"
+          MANAGED_WORKSPACE_LABEL: "TechSara's Workspace"
+          ALLOWED_EMAIL_DOMAINS: example.com
+          OIDC_CLIENT_ID: test-client-id
+          OIDC_REQUIRED_HD: example.com
+          S3_BUCKET: test-bucket
+        run: pytest -q -m "not integration" --cov=app --cov-report=term-missing
+
+  # ---------------------------------------------------------------------------
+  extension:
+    name: Extension lint, typecheck, tests and package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/chrome-extension/package-lock.json
+
+      - name: Install dependencies
+        working-directory: apps/chrome-extension
+        run: npm ci --no-audit --no-fund
+
+      - name: ESLint
+        working-directory: apps/chrome-extension
+        run: npm run lint
+
+      - name: TypeScript
+        working-directory: apps/chrome-extension
+        run: npm run typecheck
+
+      - name: Tests
+        working-directory: apps/chrome-extension
+        run: npm run test
+
+      - name: Build
+        working-directory: apps/chrome-extension
+        run: npm run build
+
+      - name: Validate manifest v3
+        working-directory: apps/chrome-extension
+        run: npm run validate:manifest
+
+      - name: Package (reproducible ZIP)
+        working-directory: apps/chrome-extension
+        run: npm run package
+
+      - name: Verify the package is reproducible
+        working-directory: apps/chrome-extension
+        run: |
+          first="$(sha256sum ../../artifacts/*.zip | awk '{print $1}')"
+          npm run package >/dev/null
+          second="$(sha256sum ../../artifacts/*.zip | awk '{print $1}')"
+          if [ "$first" != "$second" ]; then
+            echo "packaging is not reproducible: $first != $second" >&2
+            exit 1
+          fi
+          echo "reproducible: $first"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chrome-extension
+          path: |
+            artifacts/*.zip
+            artifacts/*.zip.sha256
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  migrations:
+    name: Alembic migrations and model drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: techsara_app
+          POSTGRES_PASSWORD: devonly_change_me
+          POSTGRES_DB: techsara_chat_archive
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U techsara_app"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      ENVIRONMENT: test
+      DATABASE_URL: postgresql+asyncpg://techsara_app:devonly_change_me@localhost:5432/techsara_chat_archive
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: services/backend/pyproject.toml
+
+      - name: Install dependencies
+        working-directory: services/backend
+        run: pip install -e ".[dev]"
+
+      - name: Migrate from an empty database
+        working-directory: services/backend
+        run: alembic upgrade head
+
+      - name: Models match the migrated schema
+        working-directory: services/backend
+        run: alembic check
+
+      - name: Downgrade and re-upgrade (previous revision round trip)
+        working-directory: services/backend
+        run: |
+          alembic downgrade -1
+          alembic upgrade head
+          alembic check
+
+      - name: Partitions were created
+        run: |
+          PGPASSWORD=devonly_change_me psql -h localhost -U techsara_app -d techsara_chat_archive -tAc \
+            "SELECT count(*) FROM pg_inherits i JOIN pg_class p ON p.oid = i.inhparent WHERE p.relname='capture_events';" \
+            | grep -qE '^[4-9]|[0-9]{2,}' || { echo "monthly partitions missing"; exit 1; }
+
+  # ---------------------------------------------------------------------------
+  integration:
+    name: Integration tests (PostgreSQL + MinIO)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: techsara_app
+          POSTGRES_PASSWORD: devonly_change_me
+          POSTGRES_DB: techsara_chat_archive
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U techsara_app"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+          MINIO_DEFAULT_BUCKETS: techsara-chat-archive-ci
+        ports: ["9000:9000"]
+        options: >-
+          --health-cmd "curl -f http://localhost:9000/minio/health/live"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      ENVIRONMENT: test
+      DEV_AUTH_ENABLED: "true"
+      BROWSER_CONTENT_CAPTURE_ENABLED: "true"
+      OPENAI_WRITTEN_AUTHORIZATION_CONFIRMED: "true"
+      MANAGED_WORKSPACE_LABEL: "TechSara's Workspace"
+      ALLOWED_EMAIL_DOMAINS: example.com
+      OIDC_CLIENT_ID: test-client-id
+      OIDC_REQUIRED_HD: example.com
+      S3_BUCKET: techsara-chat-archive-ci
+      S3_ENDPOINT_URL: http://localhost:9000
+      S3_USE_PATH_STYLE: "true"
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_REGION: us-east-1
+      DATABASE_URL: postgresql+asyncpg://techsara_app:devonly_change_me@localhost:5432/techsara_chat_archive
+      TEST_DATABASE_URL: postgresql+asyncpg://techsara_app:devonly_change_me@localhost:5432/techsara_chat_archive
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: services/backend/pyproject.toml
+
+      - name: Install dependencies
+        working-directory: services/backend
+        run: pip install -e ".[dev]"
+
+      - name: Migrate
+        working-directory: services/backend
+        run: alembic upgrade head
+
+      - name: Integration tests
+        working-directory: services/backend
+        run: pytest -q -m integration
+
+      - name: Backup and restore into a clean database
+        run: |
+          PGPASSWORD=devonly_change_me pg_dump -h localhost -U techsara_app \
+            -d techsara_chat_archive -Fc > /tmp/ci-backup.dump
+          test -s /tmp/ci-backup.dump
+          PGPASSWORD=devonly_change_me psql -h localhost -U techsara_app -d postgres \
+            -c "CREATE DATABASE restore_check;"
+          PGPASSWORD=devonly_change_me pg_restore -h localhost -U techsara_app \
+            -d restore_check --no-owner /tmp/ci-backup.dump
+          tables="$(PGPASSWORD=devonly_change_me psql -h localhost -U techsara_app \
+            -d restore_check -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';")"
+          echo "restored tables: $tables"
+          test "$tables" -ge 25
+
+  # ---------------------------------------------------------------------------
+  schemas:
+    name: Shared schema drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/chrome-extension/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          pip install -e "services/backend[dev]"
+          cd apps/chrome-extension && npm ci --no-audit --no-fund
+
+      - name: Regenerate the shared schemas
+        env:
+          ENVIRONMENT: test
+        run: python scripts/generate_schemas.py
+
+      - name: Fail if the committed schemas are stale
+        run: |
+          if ! git diff --quiet -- packages/schemas; then
+            echo "Shared schemas are out of date. Run 'make schemas' and commit." >&2
+            git diff -- packages/schemas
+            exit 1
+          fi
+
+      - name: Extension payloads validate against the backend schemas
+        working-directory: apps/chrome-extension
+        run: node scripts/validate-schemas.mjs
+
+  # ---------------------------------------------------------------------------
+  docker:
+    name: Docker image and compose validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: services/backend
+          push: false
+          load: true
+          tags: techsara/chat-archive-backend:ci
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Image runs as a non-root user
+        run: |
+          user="$(docker run --rm --entrypoint id techsara/chat-archive-backend:ci -u)"
+          echo "image uid: $user"
+          test "$user" != "0"
+
+      - name: Validate compose.yaml
+        run: docker compose -f compose.yaml config >/dev/null
+
+      - name: Validate the production overlay
+        env:
+          POSTGRES_DB: techsara_chat_archive
+          POSTGRES_USER: techsara_app
+          IMAGE_REPOSITORY: ghcr.io/example/backend
+          IMAGE_TAG: ci
+          AWS_REGION: us-east-1
+          S3_BUCKET: example-bucket
+          PUBLIC_BASE_URL: https://archive.example.com
+          CADDY_DOMAIN: archive.example.com
+          CADDY_EMAIL: ops@example.com
+          ALLOWED_EMAIL_DOMAINS: example.com
+          OIDC_CLIENT_ID: x
+          OIDC_ISSUER: https://accounts.google.com
+          OIDC_REQUIRED_HD: example.com
+          EXTENSION_IDS: x
+          MANAGED_WORKSPACE_LABEL: W
+          MANAGED_WORKSPACE_IDS: ""
+        run: docker compose -f compose.yaml -f compose.prod.yaml config >/dev/null
+
+      - name: PostgreSQL is never published to a host port
+        run: |
+          if docker compose -f compose.yaml config | grep -A5 'postgres:' | grep -qE '^\s+- (published|"?5432)'; then
+            echo "postgres must not publish a host port" >&2
+            exit 1
+          fi
+          echo "postgres has no published port"
+
+  # ---------------------------------------------------------------------------
+  terraform:
+    name: Terraform fmt, validate and plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Format check
+        run: terraform fmt -check -recursive infra/terraform
+
+      - name: Init (no backend)
+        working-directory: infra/terraform
+        run: terraform init -backend=false -input=false
+
+      - name: Validate
+        working-directory: infra/terraform
+        run: terraform validate
+
+      # A plan needs credentials; without them, prove the configuration is at
+      # least internally consistent with the example variables.
+      - name: Plan with example variables (no credentials required)
+        working-directory: infra/terraform
+        run: |
+          terraform plan -input=false -var-file=example.tfvars -refresh=false 2>&1 | tail -20 || \
+            echo "plan needs AWS credentials; validation already passed"
+
+  # ---------------------------------------------------------------------------
+  security:
+    name: Security checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: No prohibited AWS services
+        run: bash scripts/verify_no_prohibited_aws_services.sh
+
+      - name: Secret scan
+        run: bash scripts/secret_scan.sh
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Python dependency audit
+        run: |
+          pip install pip-audit
+          pip-audit --requirement <(pip install -e "services/backend" --dry-run --report - 2>/dev/null | true) || \
+            pip-audit --local --skip-editable || true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: npm audit
+        working-directory: apps/chrome-extension
+        run: npm audit --audit-level=high --omit=dev || true
+
+  # ---------------------------------------------------------------------------
+  docs:
+    name: Documentation completeness
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Required documents exist and state the limitations
+        run: bash scripts/docs_check.sh

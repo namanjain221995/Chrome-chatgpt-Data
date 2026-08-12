@@ -1,0 +1,305 @@
+{
+  "$defs": {
+    "CaptureLimits": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_extensions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Extensions",
+          "type": "array"
+        },
+        "allowed_mime_types": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Mime Types",
+          "type": "array"
+        },
+        "backfill_max_messages": {
+          "minimum": 1,
+          "title": "Backfill Max Messages",
+          "type": "integer"
+        },
+        "backfill_max_scrolls": {
+          "minimum": 1,
+          "title": "Backfill Max Scrolls",
+          "type": "integer"
+        },
+        "backfill_max_seconds": {
+          "minimum": 1,
+          "title": "Backfill Max Seconds",
+          "type": "integer"
+        },
+        "max_attachment_bytes": {
+          "minimum": 1024,
+          "title": "Max Attachment Bytes",
+          "type": "integer"
+        },
+        "max_batch_items": {
+          "minimum": 1,
+          "title": "Max Batch Items",
+          "type": "integer"
+        },
+        "max_request_bytes": {
+          "minimum": 1024,
+          "title": "Max Request Bytes",
+          "type": "integer"
+        },
+        "offline_queue_max_age_days": {
+          "minimum": 1,
+          "title": "Offline Queue Max Age Days",
+          "type": "integer"
+        },
+        "offline_queue_max_bytes": {
+          "minimum": 1024,
+          "title": "Offline Queue Max Bytes",
+          "type": "integer"
+        },
+        "offline_queue_max_items": {
+          "minimum": 1,
+          "title": "Offline Queue Max Items",
+          "type": "integer"
+        },
+        "rate_limit_requests_per_minute": {
+          "minimum": 1,
+          "title": "Rate Limit Requests Per Minute",
+          "type": "integer"
+        },
+        "stable_response_quiet_ms": {
+          "maximum": 30000,
+          "minimum": 250,
+          "title": "Stable Response Quiet Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_batch_items",
+        "max_request_bytes",
+        "max_attachment_bytes",
+        "allowed_mime_types",
+        "allowed_extensions",
+        "offline_queue_max_items",
+        "offline_queue_max_bytes",
+        "offline_queue_max_age_days",
+        "stable_response_quiet_ms",
+        "backfill_max_messages",
+        "backfill_max_seconds",
+        "backfill_max_scrolls",
+        "rate_limit_requests_per_minute"
+      ],
+      "title": "CaptureLimits",
+      "type": "object"
+    },
+    "CapturePolicy": {
+      "additionalProperties": false,
+      "description": "Server-authoritative capture policy.\n\nEvery flag here is decided on the server. The extension treats these as\nread-only and has no local override path; a false value always wins.",
+      "properties": {
+        "attachment_capture_enabled": {
+          "title": "Attachment Capture Enabled",
+          "type": "boolean"
+        },
+        "auto_archive_current_open_chat": {
+          "title": "Auto Archive Current Open Chat",
+          "type": "boolean"
+        },
+        "browser_content_capture_enabled": {
+          "title": "Browser Content Capture Enabled",
+          "type": "boolean"
+        },
+        "capture_active": {
+          "title": "Capture Active",
+          "type": "boolean"
+        },
+        "capture_unsent_drafts": {
+          "const": false,
+          "default": false,
+          "title": "Capture Unsent Drafts",
+          "type": "boolean"
+        },
+        "kill_switch": {
+          "title": "Kill Switch",
+          "type": "boolean"
+        },
+        "openai_written_authorization_confirmed": {
+          "title": "Openai Written Authorization Confirmed",
+          "type": "boolean"
+        },
+        "personal_workspace_capture_enabled": {
+          "const": false,
+          "default": false,
+          "title": "Personal Workspace Capture Enabled",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "browser_content_capture_enabled",
+        "openai_written_authorization_confirmed",
+        "capture_active",
+        "auto_archive_current_open_chat",
+        "attachment_capture_enabled",
+        "kill_switch"
+      ],
+      "title": "CapturePolicy",
+      "type": "object"
+    },
+    "RuntimeConfig": {
+      "additionalProperties": false,
+      "description": "The payload the extension caches and enforces.",
+      "properties": {
+        "api_base_url": {
+          "title": "Api Base Url",
+          "type": "string"
+        },
+        "config_version": {
+          "minimum": 1,
+          "title": "Config Version",
+          "type": "integer"
+        },
+        "coverage_statement": {
+          "maxLength": 1024,
+          "title": "Coverage Statement",
+          "type": "string"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "issued_at": {
+          "format": "date-time",
+          "title": "Issued At",
+          "type": "string"
+        },
+        "limits": {
+          "$ref": "#/$defs/CaptureLimits"
+        },
+        "minimum_extension_version": {
+          "maxLength": 32,
+          "pattern": "^[A-Za-z0-9._+-]+$",
+          "title": "Minimum Extension Version",
+          "type": "string"
+        },
+        "organization_slug": {
+          "title": "Organization Slug",
+          "type": "string"
+        },
+        "policy": {
+          "$ref": "#/$defs/CapturePolicy"
+        },
+        "privacy_notice_url": {
+          "title": "Privacy Notice Url",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "support_contact": {
+          "title": "Support Contact",
+          "type": "string"
+        },
+        "workspace_rules": {
+          "$ref": "#/$defs/WorkspaceRules"
+        }
+      },
+      "required": [
+        "config_version",
+        "issued_at",
+        "expires_at",
+        "organization_slug",
+        "api_base_url",
+        "policy",
+        "workspace_rules",
+        "limits",
+        "privacy_notice_url",
+        "support_contact",
+        "minimum_extension_version",
+        "coverage_statement"
+      ],
+      "title": "RuntimeConfig",
+      "type": "object"
+    },
+    "WorkspaceRules": {
+      "additionalProperties": false,
+      "description": "Conservative workspace verification rules; the client fails closed.",
+      "properties": {
+        "allowed_url_patterns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Url Patterns",
+          "type": "array"
+        },
+        "managed_workspace_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Managed Workspace Ids",
+          "type": "array"
+        },
+        "managed_workspace_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Managed Workspace Label"
+        },
+        "min_signals": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Min Signals",
+          "type": "integer"
+        },
+        "require_all_signals": {
+          "default": true,
+          "title": "Require All Signals",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "allowed_url_patterns"
+      ],
+      "title": "WorkspaceRules",
+      "type": "object"
+    }
+  },
+  "$id": "https://schemas.techsara.example/chat-archive/1.0/signed-runtime-config.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Versioned + HMAC-signed config so a tampered cache is detectable.",
+  "properties": {
+    "config": {
+      "$ref": "#/$defs/RuntimeConfig"
+    },
+    "key_id": {
+      "title": "Key Id",
+      "type": "string"
+    },
+    "signature": {
+      "title": "Signature",
+      "type": "string"
+    },
+    "signature_algorithm": {
+      "const": "HMAC-SHA256",
+      "default": "HMAC-SHA256",
+      "title": "Signature Algorithm",
+      "type": "string"
+    }
+  },
+  "required": [
+    "config",
+    "signature",
+    "key_id"
+  ],
+  "title": "SignedRuntimeConfig",
+  "type": "object"
+}

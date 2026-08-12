@@ -1,0 +1,107 @@
+# =============================================================================
+# Caddy: the only publicly reachable service.
+#
+# Terminates TLS (automatic ACME certificates), enforces HSTS and the request
+# body ceiling, applies coarse per-IP rate limiting through connection limits,
+# and proxies to the API on the private Docker network. PostgreSQL, pgAdmin,
+# MinIO and the workers are never exposed here.
+# =============================================================================
+
+{
+	email {$CADDY_EMAIL}
+	admin 127.0.0.1:2019
+	servers {
+		timeouts {
+			read_body 30s
+			read_header 10s
+			write 60s
+			idle 120s
+		}
+		max_header_size 32KB
+	}
+}
+
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+		Permissions-Policy "geolocation=(), microphone=(), camera=()"
+		-Server
+		-X-Powered-By
+	}
+}
+
+(api_proxy) {
+	reverse_proxy api:8000 {
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+		# The API trusts only the last X-Forwarded-For entry, which is the one
+		# Caddy appends here; anything a client sends appears earlier.
+		header_up X-Forwarded-For {remote_host}
+
+		health_uri /health/live
+		health_interval 15s
+		health_timeout 5s
+
+		transport http {
+			dial_timeout 5s
+			response_header_timeout 60s
+			keepalive 60s
+			keepalive_idle_conns 64
+		}
+	}
+}
+
+{$CADDY_DOMAIN} {
+	import security_headers
+
+	# Body ceiling matched to MAX_REQUEST_BYTES; the API enforces it again.
+	request_body {
+		max_size {$MAX_REQUEST_BYTES:2621440}
+	}
+
+	encode zstd gzip
+
+	# Health probes: cheap, unauthenticated, and never logged.
+	handle /health/* {
+		import api_proxy
+	}
+
+	handle /api/* {
+		import api_proxy
+	}
+
+	handle /privacy-notice {
+		header Content-Type "text/html; charset=utf-8"
+		respond `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>Employee privacy notice</title></head><body>
+<h1>TechSara ChatGPT Archive - employee privacy notice</h1>
+<p>Your company archives approved conversations from the managed company ChatGPT
+workspace. The extension never captures text you have not sent, your cookies,
+your ChatGPT session, personal-workspace conversations, or activity on other
+websites. Contact IT support for the full notice.</p>
+</body></html>` 200
+	}
+
+	# Anything else is not part of the archive API.
+	handle {
+		respond "Not found" 404
+	}
+
+	log {
+		output stdout
+		format json
+		# Query strings can carry identifiers; only method, path and status are
+		# useful for operations, so the rest is dropped.
+		level INFO
+	}
+}
+
+# Plain HTTP exists only for the ACME challenge and the redirect to HTTPS.
+http://{$CADDY_DOMAIN} {
+	redir https://{host}{uri} permanent
+}

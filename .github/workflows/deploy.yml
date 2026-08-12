@@ -1,0 +1,107 @@
+name: Deploy to EC2
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Image tag (git SHA) to deploy
+        required: true
+      instance_id:
+        description: Target EC2 instance id
+        required: true
+      environment:
+        description: Deployment environment
+        required: true
+        default: production
+        type: choice
+        options: [production, staging]
+
+permissions:
+  contents: read
+  id-token: write # OIDC federation; no long-lived AWS key is stored
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.image_tag }} to ${{ inputs.instance_id }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Confirm the image exists before touching the instance
+        run: |
+          echo "deploying tag ${{ inputs.image_tag }}"
+          test -n "${{ inputs.image_tag }}"
+
+      # SSM Run Command rather than SSH: no inbound port, and every invocation
+      # is recorded in CloudTrail with the identity that ran it.
+      - name: Deploy through SSM Run Command
+        id: deploy
+        run: |
+          command_id="$(aws ssm send-command \
+            --document-name "techsara-chat-archive-deploy" \
+            --targets "Key=instanceids,Values=${{ inputs.instance_id }}" \
+            --parameters "imageTag=${{ inputs.image_tag }}" \
+            --comment "Deploy ${{ inputs.image_tag }} by ${{ github.actor }}" \
+            --query 'Command.CommandId' --output text)"
+          echo "command_id=${command_id}" >> "$GITHUB_OUTPUT"
+          echo "SSM command: ${command_id}"
+
+          for _ in $(seq 1 60); do
+            status="$(aws ssm get-command-invocation \
+              --command-id "${command_id}" \
+              --instance-id "${{ inputs.instance_id }}" \
+              --query 'Status' --output text 2>/dev/null || echo Pending)"
+            echo "status: ${status}"
+            case "${status}" in
+              Success) exit 0 ;;
+              Failed|Cancelled|TimedOut)
+                aws ssm get-command-invocation \
+                  --command-id "${command_id}" \
+                  --instance-id "${{ inputs.instance_id }}" \
+                  --query 'StandardErrorContent' --output text
+                exit 1 ;;
+            esac
+            sleep 15
+          done
+          echo "deployment did not finish within the timeout" >&2
+          exit 1
+
+      - name: Verify the public health endpoint
+        run: |
+          url="${{ vars.PUBLIC_BASE_URL }}/health/ready"
+          for _ in $(seq 1 20); do
+            if curl -fsS "$url" | grep -q '"status":"ok"'; then
+              echo "health check passed"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "post-deploy health check failed" >&2
+          exit 1
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          {
+            echo "## Deployment"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Image tag | \`${{ inputs.image_tag }}\` |"
+            echo "| Instance | \`${{ inputs.instance_id }}\` |"
+            echo "| Environment | ${{ inputs.environment }} |"
+            echo "| SSM command | \`${{ steps.deploy.outputs.command_id }}\` |"
+            echo "| Actor | ${{ github.actor }} |"
+            echo ""
+            echo "Application images roll back automatically on a failed health check."
+            echo "Database migrations are NOT rolled back: see docs/PRODUCTION_DEPLOYMENT.md."
+          } >> "$GITHUB_STEP_SUMMARY"

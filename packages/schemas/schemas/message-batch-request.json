@@ -1,0 +1,467 @@
+{
+  "$defs": {
+    "Citation": {
+      "additionalProperties": false,
+      "properties": {
+        "index": {
+          "minimum": 0,
+          "title": "Index",
+          "type": "integer"
+        },
+        "source_id": {
+          "anyOf": [
+            {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:@\\-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Id"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "maxLength": 1024,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        }
+      },
+      "required": [
+        "index"
+      ],
+      "title": "Citation",
+      "type": "object"
+    },
+    "ClientContext": {
+      "additionalProperties": false,
+      "description": "Non-sensitive client provenance attached to every ingest request.",
+      "properties": {
+        "adapter_version": {
+          "description": "DOM adapter version used for extraction",
+          "maxLength": 32,
+          "pattern": "^[A-Za-z0-9._+-]+$",
+          "title": "Adapter Version",
+          "type": "string"
+        },
+        "captured_at": {
+          "description": "Client clock at capture time (UTC)",
+          "format": "date-time",
+          "title": "Captured At",
+          "type": "string"
+        },
+        "device_fingerprint": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 16,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Device Fingerprint"
+        },
+        "extension_version": {
+          "description": "Extension version that produced the payload",
+          "maxLength": 32,
+          "pattern": "^[A-Za-z0-9._+-]+$",
+          "title": "Extension Version",
+          "type": "string"
+        },
+        "page_locale": {
+          "anyOf": [
+            {
+              "maxLength": 16,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Page Locale"
+        },
+        "schema_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "extension_version",
+        "adapter_version",
+        "captured_at"
+      ],
+      "title": "ClientContext",
+      "type": "object"
+    },
+    "MessageIn": {
+      "additionalProperties": false,
+      "description": "A single committed message version.\n\n``text`` is the normalised plain text; ``sanitized_html`` is optional rich\ntext that the extension has already sanitised. Neither may contain unsent\ndraft content \u2014 the extension only emits messages present in the rendered\ntranscript.",
+      "properties": {
+        "attachment_client_ids": {
+          "items": {
+            "maxLength": 128,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Attachment Client Ids",
+          "type": "array"
+        },
+        "author_name": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Author Name"
+        },
+        "branch_key": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Branch Key"
+        },
+        "branch_selected": {
+          "default": true,
+          "title": "Branch Selected",
+          "type": "boolean"
+        },
+        "citations": {
+          "items": {
+            "$ref": "#/$defs/Citation"
+          },
+          "maxItems": 100,
+          "title": "Citations",
+          "type": "array"
+        },
+        "completion_status": {
+          "default": "complete",
+          "enum": [
+            "complete",
+            "partial",
+            "reconciled",
+            "unknown"
+          ],
+          "title": "Completion Status",
+          "type": "string"
+        },
+        "content_sha256": {
+          "description": "Lowercase SHA-256 hex",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Sha256",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "maxLength": 128,
+          "minLength": 8,
+          "pattern": "^[A-Za-z0-9._:-]+$",
+          "title": "Idempotency Key",
+          "type": "string"
+        },
+        "is_edit": {
+          "default": false,
+          "title": "Is Edit",
+          "type": "boolean"
+        },
+        "is_regeneration": {
+          "default": false,
+          "title": "Is Regeneration",
+          "type": "boolean"
+        },
+        "parent_source_message_id": {
+          "anyOf": [
+            {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:@\\-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Source Message Id"
+        },
+        "parts": {
+          "items": {
+            "$ref": "#/$defs/MessagePartIn"
+          },
+          "maxItems": 500,
+          "title": "Parts",
+          "type": "array"
+        },
+        "role": {
+          "enum": [
+            "user",
+            "assistant",
+            "tool",
+            "system"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "sanitized_html": {
+          "anyOf": [
+            {
+              "maxLength": 2000000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sanitized Html"
+        },
+        "sequence_index": {
+          "minimum": 0,
+          "title": "Sequence Index",
+          "type": "integer"
+        },
+        "source_conversation_id": {
+          "maxLength": 255,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._:@\\-]+$",
+          "title": "Source Conversation Id",
+          "type": "string"
+        },
+        "source_created_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Created At"
+        },
+        "source_message_id": {
+          "anyOf": [
+            {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:@\\-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Message Id"
+        },
+        "text": {
+          "maxLength": 1000000,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotency_key",
+        "source_conversation_id",
+        "role",
+        "sequence_index",
+        "text",
+        "content_sha256"
+      ],
+      "title": "MessageIn",
+      "type": "object"
+    },
+    "MessagePartIn": {
+      "additionalProperties": false,
+      "description": "One structured fragment of a message, in document order.",
+      "properties": {
+        "index": {
+          "minimum": 0,
+          "title": "Index",
+          "type": "integer"
+        },
+        "kind": {
+          "enum": [
+            "text",
+            "code",
+            "heading",
+            "list",
+            "table",
+            "quote",
+            "link",
+            "citation",
+            "image_ref",
+            "attachment_ref",
+            "tool_output",
+            "unknown"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "language": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Language"
+        },
+        "structured": {
+          "title": "Structured",
+          "type": "object"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "maxLength": 1000000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        }
+      },
+      "required": [
+        "index",
+        "kind"
+      ],
+      "title": "MessagePartIn",
+      "type": "object"
+    },
+    "WorkspaceRef": {
+      "additionalProperties": false,
+      "description": "How the extension identifies the workspace it observed.\n\n``verified`` is asserted by the client but re-checked server-side; the\nserver never stores content for an unverified or personal workspace.",
+      "properties": {
+        "kind": {
+          "default": "unverified",
+          "enum": [
+            "managed_company",
+            "personal",
+            "unverified"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "maxLength": 255,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "source_workspace_id": {
+          "anyOf": [
+            {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:@\\-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Workspace Id"
+        },
+        "verification_signals": {
+          "items": {
+            "maxLength": 64,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Verification Signals",
+          "type": "array"
+        },
+        "verified": {
+          "default": false,
+          "title": "Verified",
+          "type": "boolean"
+        }
+      },
+      "title": "WorkspaceRef",
+      "type": "object"
+    }
+  },
+  "$id": "https://schemas.techsara.example/chat-archive/1.0/message-batch-request.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "client": {
+      "$ref": "#/$defs/ClientContext"
+    },
+    "messages": {
+      "items": {
+        "$ref": "#/$defs/MessageIn"
+      },
+      "maxItems": 100,
+      "minItems": 1,
+      "title": "Messages",
+      "type": "array"
+    },
+    "workspace": {
+      "$ref": "#/$defs/WorkspaceRef"
+    }
+  },
+  "required": [
+    "workspace",
+    "messages",
+    "client"
+  ],
+  "title": "MessageBatchIn",
+  "type": "object"
+}

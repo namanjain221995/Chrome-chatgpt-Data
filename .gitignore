@@ -1,0 +1,51 @@
+# --- Secrets: never commit ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+!tests/fixtures/**/*.key
+secrets/
+run/secrets/
+*.tfvars
+!example.tfvars
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+dist/
+build/
+*.egg-info/
+
+# --- Node / extension ---
+node_modules/
+apps/chrome-extension/dist/
+apps/chrome-extension/.vite/
+*.tsbuildinfo
+
+# --- Build artifacts ---
+artifacts/
+/tmp/
+
+# --- Local data volumes ---
+.data/
+srv/
+
+# --- Editors / OS ---
+.DS_Store
+.idea/
+.vscode/
+*.swp

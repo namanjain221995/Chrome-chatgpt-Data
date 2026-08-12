@@ -1,0 +1,274 @@
+# =============================================================================
+# Production overrides for the single EC2 instance.
+#
+#   docker compose -f compose.yaml -f compose.prod.yaml up -d
+#
+# Differences from development:
+#   * images are pulled by immutable tag, never built on the box;
+#   * secrets come from root-owned files under /srv/.../secrets rendered from
+#     SSM Parameter Store at deploy time — never from the environment;
+#   * MinIO is absent: production uses real S3 via the instance profile;
+#   * data lives on the encrypted EBS data volume under /srv;
+#   * resource limits are set so one service cannot starve the others.
+# =============================================================================
+
+name: techsara-chat-archive
+
+x-prod-env: &prod-env
+  ENVIRONMENT: production
+  DEV_AUTH_ENABLED: "false"
+  LOG_FORMAT: json
+  LOG_MESSAGE_CONTENT: "false"
+  # In production the endpoint must be empty: boto3 talks to real S3 and the
+  # settings guard refuses to start if this is set.
+  S3_ENDPOINT_URL: ""
+  S3_USE_PATH_STYLE: "false"
+  AWS_ACCESS_KEY_ID: ""
+  AWS_SECRET_ACCESS_KEY: ""
+  JWT_SECRET_FILE: /run/secrets/jwt_secret
+  CONFIG_SIGNING_KEY_FILE: /run/secrets/config_signing_key
+  OIDC_CLIENT_SECRET_FILE: /run/secrets/oidc_client_secret
+  OPENAI_COMPLIANCE_API_KEY_FILE: /run/secrets/openai_compliance_api_key
+  POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      TZ: UTC
+    volumes:
+      - ${DATA_ROOT:-/srv/techsara-chat-archive}/postgres:/var/lib/postgresql/data
+      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets/postgres_password:/run/secrets/postgres_password:ro
+    command:
+      - postgres
+      - -c
+      - shared_buffers=2GB
+      - -c
+      - work_mem=24MB
+      - -c
+      - maintenance_work_mem=512MB
+      - -c
+      - effective_cache_size=5GB
+      - -c
+      - max_connections=200
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - wal_compression=on
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - max_wal_size=4GB
+      - -c
+      - log_min_duration_statement=1000
+      - -c
+      - track_io_timing=on
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+    deploy:
+      resources:
+        limits:
+          memory: 3g
+        reservations:
+          memory: 2g
+    shm_size: 512m
+
+  # MinIO exists only for local development; scaling it to zero here keeps a
+  # stray `--profile dev` from ever starting it on the instance.
+  minio:
+    profiles: [never]
+  minio-init:
+    profiles: [never]
+
+  migrate:
+    image: ${IMAGE_REPOSITORY}:${IMAGE_TAG}
+    pull_policy: always
+    build: !reset null
+    environment:
+      <<: *prod-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:REPLACE@postgres:5432/${POSTGRES_DB}
+      AWS_REGION: ${AWS_REGION}
+      S3_BUCKET: ${S3_BUCKET}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+      ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID}
+      OIDC_ISSUER: ${OIDC_ISSUER}
+      OIDC_REQUIRED_HD: ${OIDC_REQUIRED_HD}
+      EXTENSION_IDS: ${EXTENSION_IDS}
+      MANAGED_WORKSPACE_LABEL: ${MANAGED_WORKSPACE_LABEL}
+      MANAGED_WORKSPACE_IDS: ${MANAGED_WORKSPACE_IDS}
+    volumes:
+      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets:/run/secrets:ro
+
+  api:
+    image: ${IMAGE_REPOSITORY}:${IMAGE_TAG}
+    pull_policy: always
+    build: !reset null
+    environment:
+      <<: *prod-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:REPLACE@postgres:5432/${POSTGRES_DB}
+      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-20}
+      DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-20}
+      AWS_REGION: ${AWS_REGION}
+      S3_BUCKET: ${S3_BUCKET}
+      S3_ENCRYPTION_MODE: ${S3_ENCRYPTION_MODE:-SSE-S3}
+      S3_KMS_KEY_ID: ${S3_KMS_KEY_ID:-}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+      API_BASE_PATH: ${API_BASE_PATH:-/api/v1}
+      ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID}
+      OIDC_ISSUER: ${OIDC_ISSUER}
+      OIDC_REQUIRED_HD: ${OIDC_REQUIRED_HD}
+      EXTENSION_IDS: ${EXTENSION_IDS}
+      ADMIN_ORIGINS: ${ADMIN_ORIGINS:-}
+      MANAGED_WORKSPACE_LABEL: ${MANAGED_WORKSPACE_LABEL}
+      MANAGED_WORKSPACE_IDS: ${MANAGED_WORKSPACE_IDS}
+      BROWSER_CONTENT_CAPTURE_ENABLED: ${BROWSER_CONTENT_CAPTURE_ENABLED:-false}
+      OPENAI_WRITTEN_AUTHORIZATION_CONFIRMED: ${OPENAI_WRITTEN_AUTHORIZATION_CONFIRMED:-false}
+      AUTO_ARCHIVE_CURRENT_OPEN_CHAT: ${AUTO_ARCHIVE_CURRENT_OPEN_CHAT:-true}
+      ATTACHMENT_CAPTURE_ENABLED: ${ATTACHMENT_CAPTURE_ENABLED:-true}
+      KILL_SWITCH_ENABLED: ${KILL_SWITCH_ENABLED:-false}
+      TRAINING_EXPORT_ENABLED: ${TRAINING_EXPORT_ENABLED:-false}
+      RATE_LIMIT_REQUESTS_PER_MINUTE: ${RATE_LIMIT_REQUESTS_PER_MINUTE:-300}
+      API_WORKERS: ${API_WORKERS:-3}
+      GIT_SHA: ${IMAGE_TAG}
+    command: ["gunicorn", "app.main:app",
+              "--worker-class", "uvicorn.workers.UvicornWorker",
+              "--workers", "${API_WORKERS:-3}",
+              "--bind", "0.0.0.0:8000",
+              "--timeout", "60",
+              "--graceful-timeout", "30",
+              "--keep-alive", "5",
+              "--max-requests", "2000",
+              "--max-requests-jitter", "200",
+              "--access-logfile", "-",
+              "--error-logfile", "-"]
+    volumes:
+      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets:/run/secrets:ro
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "1.5"
+        reservations:
+          memory: 768m
+
+  worker:
+    image: ${IMAGE_REPOSITORY}:${IMAGE_TAG}
+    pull_policy: always
+    build: !reset null
+    environment:
+      <<: *prod-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:REPLACE@postgres:5432/${POSTGRES_DB}
+      AWS_REGION: ${AWS_REGION}
+      S3_BUCKET: ${S3_BUCKET}
+      S3_ENCRYPTION_MODE: ${S3_ENCRYPTION_MODE:-SSE-S3}
+      S3_KMS_KEY_ID: ${S3_KMS_KEY_ID:-}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+      ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID}
+      OIDC_ISSUER: ${OIDC_ISSUER}
+      MANAGED_WORKSPACE_LABEL: ${MANAGED_WORKSPACE_LABEL}
+      TRAINING_EXPORT_ENABLED: ${TRAINING_EXPORT_ENABLED:-false}
+      RAW_RETENTION_DAYS: ${RAW_RETENTION_DAYS:-365}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+    volumes:
+      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets:/run/secrets:ro
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
+        reservations:
+          memory: 384m
+
+  compliance-poller:
+    image: ${IMAGE_REPOSITORY}:${IMAGE_TAG}
+    pull_policy: always
+    build: !reset null
+    environment:
+      <<: *prod-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:REPLACE@postgres:5432/${POSTGRES_DB}
+      AWS_REGION: ${AWS_REGION}
+      S3_BUCKET: ${S3_BUCKET}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+      ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID}
+      COMPLIANCE_POLL_ENABLED: ${COMPLIANCE_POLL_ENABLED:-false}
+      OPENAI_COMPLIANCE_BASE_URL: ${OPENAI_COMPLIANCE_BASE_URL:-}
+      OPENAI_COMPLIANCE_LOG_PATH: ${OPENAI_COMPLIANCE_LOG_PATH:-}
+      OPENAI_COMPLIANCE_FILES_PATH: ${OPENAI_COMPLIANCE_FILES_PATH:-}
+      COMPLIANCE_POLL_INTERVAL_SECONDS: ${COMPLIANCE_POLL_INTERVAL_SECONDS:-300}
+      COMPLIANCE_OVERLAP_SECONDS: ${COMPLIANCE_OVERLAP_SECONDS:-600}
+    volumes:
+      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets:/run/secrets:ro
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.5"
+
+  backup:
+    image: ${IMAGE_REPOSITORY}:${IMAGE_TAG}
+    pull_policy: always
+    build: !reset null
+    environment:
+      <<: *prod-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:REPLACE@postgres:5432/${POSTGRES_DB}
+      AWS_REGION: ${AWS_REGION}
+      S3_BUCKET: ${S3_BUCKET}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-90}
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER}
+      PGDATABASE: ${POSTGRES_DB}
+      PGPASSFILE: /run/secrets/pgpass
+    volumes:
+      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets:/run/secrets:ro
+      - ${DATA_ROOT:-/srv/techsara-chat-archive}/backups:/var/backups/techsara
+      - ./scripts:/opt/scripts:ro
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+
+  caddy:
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      CADDY_DOMAIN: ${CADDY_DOMAIN}
+      CADDY_EMAIL: ${CADDY_EMAIL}
+      MAX_REQUEST_BYTES: ${MAX_REQUEST_BYTES:-2621440}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${DATA_ROOT:-/srv/techsara-chat-archive}/caddy/data:/data
+      - ${DATA_ROOT:-/srv/techsara-chat-archive}/caddy/config:/config
+    deploy:
+      resources:
+        limits:
+          memory: 384m
+
+  pgadmin:
+    profiles: [admin]
+    # Loopback only: reach it through SSM Session Manager port forwarding.
+    ports:
+      - "127.0.0.1:5050:5050"
+    volumes:
+      - ${DATA_ROOT:-/srv/techsara-chat-archive}/pgadmin:/var/lib/pgadmin
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+volumes:
+  postgres-data:
+    name: techsara-postgres-data-unused
+  minio-data:
+    name: techsara-minio-data-unused

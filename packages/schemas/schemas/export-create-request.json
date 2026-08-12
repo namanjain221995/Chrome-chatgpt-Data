@@ -1,0 +1,97 @@
+{
+  "$id": "https://schemas.techsara.example/chat-archive/1.0/export-create-request.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "conversation_ids": {
+      "items": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "maxItems": 5000,
+      "title": "Conversation Ids",
+      "type": "array"
+    },
+    "from_time": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "From Time"
+    },
+    "include_attachments": {
+      "default": false,
+      "title": "Include Attachments",
+      "type": "boolean"
+    },
+    "kind": {
+      "enum": [
+        "curated_training_jsonl",
+        "compliance_extract",
+        "legal_hold_bundle"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "reason": {
+      "maxLength": 1024,
+      "minLength": 8,
+      "title": "Reason",
+      "type": "string"
+    },
+    "split_ratios": {
+      "additionalProperties": {
+        "type": "number"
+      },
+      "title": "Split Ratios",
+      "type": "object"
+    },
+    "split_strategy": {
+      "default": "conversation_hash",
+      "enum": [
+        "conversation_hash",
+        "none"
+      ],
+      "title": "Split Strategy",
+      "type": "string"
+    },
+    "to_time": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "To Time"
+    },
+    "workspace_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Workspace Id"
+    }
+  },
+  "required": [
+    "kind",
+    "reason"
+  ],
+  "title": "ExportCreateIn",
+  "type": "object"
+}

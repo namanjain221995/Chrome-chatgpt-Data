@@ -1,0 +1,186 @@
+{
+  "$defs": {
+    "ItemResult": {
+      "additionalProperties": false,
+      "description": "Per-item outcome inside a batch response.",
+      "properties": {
+        "conversation_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Conversation Id"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Id"
+        },
+        "idempotency_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Idempotency Key"
+        },
+        "index": {
+          "minimum": 0,
+          "title": "Index",
+          "type": "integer"
+        },
+        "message_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message Id"
+        },
+        "message_version_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message Version Id"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 1024,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        },
+        "status": {
+          "enum": [
+            "accepted",
+            "duplicate",
+            "rejected",
+            "retryable"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "index",
+        "status"
+      ],
+      "title": "ItemResult",
+      "type": "object"
+    }
+  },
+  "$id": "https://schemas.techsara.example/chat-archive/1.0/batch-response.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "accepted": {
+      "minimum": 0,
+      "title": "Accepted",
+      "type": "integer"
+    },
+    "backpressure": {
+      "default": false,
+      "title": "Backpressure",
+      "type": "boolean"
+    },
+    "duplicate": {
+      "minimum": 0,
+      "title": "Duplicate",
+      "type": "integer"
+    },
+    "queue_depth": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Queue Depth"
+    },
+    "rejected": {
+      "minimum": 0,
+      "title": "Rejected",
+      "type": "integer"
+    },
+    "results": {
+      "items": {
+        "$ref": "#/$defs/ItemResult"
+      },
+      "title": "Results",
+      "type": "array"
+    },
+    "retryable": {
+      "minimum": 0,
+      "title": "Retryable",
+      "type": "integer"
+    },
+    "server_time": {
+      "format": "date-time",
+      "title": "Server Time",
+      "type": "string"
+    }
+  },
+  "required": [
+    "accepted",
+    "duplicate",
+    "rejected",
+    "retryable",
+    "results",
+    "server_time"
+  ],
+  "title": "BatchResponse",
+  "type": "object"
+}

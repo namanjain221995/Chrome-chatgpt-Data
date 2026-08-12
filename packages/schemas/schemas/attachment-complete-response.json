@@ -1,0 +1,61 @@
+{
+  "$id": "https://schemas.techsara.example/chat-archive/1.0/attachment-complete-response.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "attachment_id": {
+      "format": "uuid",
+      "title": "Attachment Id",
+      "type": "string"
+    },
+    "linked_message_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Linked Message Id"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "maxLength": 1024,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    },
+    "state": {
+      "enum": [
+        "pending",
+        "quarantine",
+        "clean",
+        "rejected",
+        "expired",
+        "metadata_only"
+      ],
+      "title": "State",
+      "type": "string"
+    },
+    "verified": {
+      "title": "Verified",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "attachment_id",
+    "state",
+    "verified"
+  ],
+  "title": "AttachmentCompleteOut",
+  "type": "object"
+}

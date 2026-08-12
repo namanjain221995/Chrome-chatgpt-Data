@@ -1,0 +1,11 @@
+[Unit]
+Description=Run one PostgreSQL logical backup of the TechSara archive
+Requires=techsara-chat-archive.service
+After=techsara-chat-archive.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/techsara-chat-archive
+EnvironmentFile=/opt/techsara-chat-archive/.env
+ExecStart=/usr/bin/docker compose -f compose.yaml -f compose.prod.yaml exec -T backup /bin/sh /opt/scripts/backup_postgres.sh
+TimeoutStartSec=3600

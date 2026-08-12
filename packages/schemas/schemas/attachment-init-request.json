@@ -1,0 +1,170 @@
+{
+  "$defs": {
+    "ClientContext": {
+      "additionalProperties": false,
+      "description": "Non-sensitive client provenance attached to every ingest request.",
+      "properties": {
+        "adapter_version": {
+          "description": "DOM adapter version used for extraction",
+          "maxLength": 32,
+          "pattern": "^[A-Za-z0-9._+-]+$",
+          "title": "Adapter Version",
+          "type": "string"
+        },
+        "captured_at": {
+          "description": "Client clock at capture time (UTC)",
+          "format": "date-time",
+          "title": "Captured At",
+          "type": "string"
+        },
+        "device_fingerprint": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 16,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Device Fingerprint"
+        },
+        "extension_version": {
+          "description": "Extension version that produced the payload",
+          "maxLength": 32,
+          "pattern": "^[A-Za-z0-9._+-]+$",
+          "title": "Extension Version",
+          "type": "string"
+        },
+        "page_locale": {
+          "anyOf": [
+            {
+              "maxLength": 16,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Page Locale"
+        },
+        "schema_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "extension_version",
+        "adapter_version",
+        "captured_at"
+      ],
+      "title": "ClientContext",
+      "type": "object"
+    }
+  },
+  "$id": "https://schemas.techsara.example/chat-archive/1.0/attachment-init-request.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Metadata only. Bytes go straight to S3 via the returned presigned PUT.",
+  "properties": {
+    "byte_size": {
+      "minimum": 1,
+      "title": "Byte Size",
+      "type": "integer"
+    },
+    "client": {
+      "$ref": "#/$defs/ClientContext"
+    },
+    "client_attachment_id": {
+      "maxLength": 128,
+      "minLength": 8,
+      "title": "Client Attachment Id",
+      "type": "string"
+    },
+    "filename": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Filename",
+      "type": "string"
+    },
+    "metadata_only": {
+      "default": false,
+      "title": "Metadata Only",
+      "type": "boolean"
+    },
+    "mime_type": {
+      "maxLength": 255,
+      "title": "Mime Type",
+      "type": "string"
+    },
+    "relation": {
+      "default": "uploaded_by_user",
+      "enum": [
+        "uploaded_by_user",
+        "generated_by_assistant",
+        "referenced_historical"
+      ],
+      "title": "Relation",
+      "type": "string"
+    },
+    "sha256": {
+      "description": "Lowercase SHA-256 hex",
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Sha256",
+      "type": "string"
+    },
+    "source_conversation_id": {
+      "maxLength": 255,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:@\\-]+$",
+      "title": "Source Conversation Id",
+      "type": "string"
+    },
+    "source_file_id": {
+      "anyOf": [
+        {
+          "maxLength": 255,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._:@\\-]+$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source File Id"
+    },
+    "source_message_id": {
+      "anyOf": [
+        {
+          "maxLength": 255,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._:@\\-]+$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Message Id"
+    }
+  },
+  "required": [
+    "client_attachment_id",
+    "source_conversation_id",
+    "filename",
+    "mime_type",
+    "byte_size",
+    "sha256",
+    "client"
+  ],
+  "title": "AttachmentInitIn",
+  "type": "object"
+}

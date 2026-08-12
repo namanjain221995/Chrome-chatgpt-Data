@@ -1,0 +1,14 @@
+# Optional belt-and-braces timer. The `backup` compose service already runs a
+# scheduled loop; this timer is for operators who prefer systemd to own the
+# schedule. Enable one or the other, not both.
+
+[Unit]
+Description=Nightly PostgreSQL logical backup for the TechSara archive
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+RandomizedDelaySec=900
+Persistent=true
+
+[Install]
+WantedBy=timers.target

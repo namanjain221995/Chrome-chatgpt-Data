@@ -1,0 +1,26 @@
+{
+  "generated_from": "services/backend/app/schemas (Pydantic v2)",
+  "note": "Do not edit by hand. Run `make schemas` after changing a backend schema; CI fails when these files drift from the models.",
+  "schema_version": "1.0",
+  "schemas": {
+    "attachment-complete-request": "./schemas/attachment-complete-request.json",
+    "attachment-complete-response": "./schemas/attachment-complete-response.json",
+    "attachment-init-request": "./schemas/attachment-init-request.json",
+    "attachment-init-response": "./schemas/attachment-init-response.json",
+    "auth-exchange-request": "./schemas/auth-exchange-request.json",
+    "auth-tokens-response": "./schemas/auth-tokens-response.json",
+    "batch-response": "./schemas/batch-response.json",
+    "capture-event-batch-request": "./schemas/capture-event-batch-request.json",
+    "conversation-upsert-request": "./schemas/conversation-upsert-request.json",
+    "conversation-upsert-response": "./schemas/conversation-upsert-response.json",
+    "device-register-request": "./schemas/device-register-request.json",
+    "device-register-response": "./schemas/device-register-response.json",
+    "error-response": "./schemas/error-response.json",
+    "export-create-request": "./schemas/export-create-request.json",
+    "export-response": "./schemas/export-response.json",
+    "feedback-request": "./schemas/feedback-request.json",
+    "message-batch-request": "./schemas/message-batch-request.json",
+    "signed-runtime-config": "./schemas/signed-runtime-config.json",
+    "sync-status-response": "./schemas/sync-status-response.json"
+  }
+}

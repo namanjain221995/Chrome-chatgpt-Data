@@ -1,0 +1,81 @@
+{
+  "$id": "https://schemas.techsara.example/chat-archive/1.0/device-register-request.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "adapter_version": {
+      "maxLength": 32,
+      "pattern": "^[A-Za-z0-9._+-]+$",
+      "title": "Adapter Version",
+      "type": "string"
+    },
+    "browser_version": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Browser Version"
+    },
+    "device_fingerprint": {
+      "maxLength": 128,
+      "minLength": 16,
+      "title": "Device Fingerprint",
+      "type": "string"
+    },
+    "extension_id": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Extension Id"
+    },
+    "extension_version": {
+      "maxLength": 32,
+      "pattern": "^[A-Za-z0-9._+-]+$",
+      "title": "Extension Version",
+      "type": "string"
+    },
+    "managed_by_policy": {
+      "default": false,
+      "title": "Managed By Policy",
+      "type": "boolean"
+    },
+    "notice_acknowledged": {
+      "default": false,
+      "title": "Notice Acknowledged",
+      "type": "boolean"
+    },
+    "platform": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Platform"
+    }
+  },
+  "required": [
+    "device_fingerprint",
+    "extension_version",
+    "adapter_version"
+  ],
+  "title": "DeviceRegisterIn",
+  "type": "object"
+}

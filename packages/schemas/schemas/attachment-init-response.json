@@ -1,0 +1,85 @@
+{
+  "$id": "https://schemas.techsara.example/chat-archive/1.0/attachment-init-response.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "attachment_id": {
+      "format": "uuid",
+      "title": "Attachment Id",
+      "type": "string"
+    },
+    "duplicate": {
+      "default": false,
+      "title": "Duplicate",
+      "type": "boolean"
+    },
+    "expires_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Expires At"
+    },
+    "s3_key": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "S3 Key"
+    },
+    "state": {
+      "enum": [
+        "pending",
+        "quarantine",
+        "clean",
+        "rejected",
+        "expired",
+        "metadata_only"
+      ],
+      "title": "State",
+      "type": "string"
+    },
+    "upload_headers": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Upload Headers",
+      "type": "object"
+    },
+    "upload_method": {
+      "const": "PUT",
+      "default": "PUT",
+      "title": "Upload Method",
+      "type": "string"
+    },
+    "upload_url": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Upload Url"
+    }
+  },
+  "required": [
+    "attachment_id",
+    "state"
+  ],
+  "title": "AttachmentInitOut",
+  "type": "object"
+}

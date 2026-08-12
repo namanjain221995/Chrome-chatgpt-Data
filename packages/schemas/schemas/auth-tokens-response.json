@@ -1,0 +1,82 @@
+{
+  "$id": "https://schemas.techsara.example/chat-archive/1.0/auth-tokens-response.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "access_token": {
+      "title": "Access Token",
+      "type": "string"
+    },
+    "device_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Device Id"
+    },
+    "email": {
+      "title": "Email",
+      "type": "string"
+    },
+    "expires_in": {
+      "minimum": 1,
+      "title": "Expires In",
+      "type": "integer"
+    },
+    "notice_acknowledged": {
+      "title": "Notice Acknowledged",
+      "type": "boolean"
+    },
+    "organization_id": {
+      "format": "uuid",
+      "title": "Organization Id",
+      "type": "string"
+    },
+    "refresh_expires_in": {
+      "minimum": 1,
+      "title": "Refresh Expires In",
+      "type": "integer"
+    },
+    "refresh_token": {
+      "title": "Refresh Token",
+      "type": "string"
+    },
+    "roles": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Roles",
+      "type": "array"
+    },
+    "token_type": {
+      "const": "Bearer",
+      "default": "Bearer",
+      "title": "Token Type",
+      "type": "string"
+    },
+    "user_id": {
+      "format": "uuid",
+      "title": "User Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "access_token",
+    "expires_in",
+    "refresh_token",
+    "refresh_expires_in",
+    "user_id",
+    "organization_id",
+    "email",
+    "roles",
+    "notice_acknowledged"
+  ],
+  "title": "AuthTokensOut",
+  "type": "object"
+}

@@ -1,0 +1,53 @@
+{
+  "$id": "https://schemas.techsara.example/chat-archive/1.0/conversation-upsert-response.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "already_archived_message_count": {
+      "minimum": 0,
+      "title": "Already Archived Message Count",
+      "type": "integer"
+    },
+    "capture_completeness": {
+      "enum": [
+        "complete_current_page",
+        "partial_scroll_limit",
+        "live_only",
+        "compliance_verified",
+        "reconciled",
+        "unknown"
+      ],
+      "title": "Capture Completeness",
+      "type": "string"
+    },
+    "conversation_id": {
+      "format": "uuid",
+      "title": "Conversation Id",
+      "type": "string"
+    },
+    "created": {
+      "title": "Created",
+      "type": "boolean"
+    },
+    "server_time": {
+      "format": "date-time",
+      "title": "Server Time",
+      "type": "string"
+    },
+    "workspace_id": {
+      "format": "uuid",
+      "title": "Workspace Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "conversation_id",
+    "workspace_id",
+    "created",
+    "capture_completeness",
+    "already_archived_message_count",
+    "server_time"
+  ],
+  "title": "ConversationUpsertOut",
+  "type": "object"
+}

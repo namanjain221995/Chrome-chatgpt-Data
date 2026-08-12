@@ -1,0 +1,140 @@
+{
+  "$id": "https://schemas.techsara.example/chat-archive/1.0/auth-exchange-request.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Authorization Code + PKCE exchange, or a directly supplied ID token.\n\nThe extension never sends an e-mail address as proof of identity: the\nbackend derives identity from the verified ID token only.",
+  "properties": {
+    "code": {
+      "anyOf": [
+        {
+          "maxLength": 2048,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Code"
+    },
+    "code_verifier": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 43,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Code Verifier"
+    },
+    "device_fingerprint": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 16,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Device Fingerprint"
+    },
+    "extension_version": {
+      "anyOf": [
+        {
+          "maxLength": 32,
+          "pattern": "^[A-Za-z0-9._+-]+$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Extension Version"
+    },
+    "grant_type": {
+      "default": "authorization_code",
+      "enum": [
+        "authorization_code",
+        "id_token",
+        "refresh_token"
+      ],
+      "title": "Grant Type",
+      "type": "string"
+    },
+    "id_token": {
+      "anyOf": [
+        {
+          "maxLength": 8192,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Id Token"
+    },
+    "nonce": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Nonce"
+    },
+    "redirect_uri": {
+      "anyOf": [
+        {
+          "maxLength": 2048,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Redirect Uri"
+    },
+    "refresh_token": {
+      "anyOf": [
+        {
+          "maxLength": 512,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Refresh Token"
+    },
+    "state": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "State"
+    }
+  },
+  "title": "AuthExchangeIn",
+  "type": "object"
+}

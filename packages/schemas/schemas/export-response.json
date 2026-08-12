@@ -1,0 +1,126 @@
+{
+  "$id": "https://schemas.techsara.example/chat-archive/1.0/export-response.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "byte_size": {
+      "minimum": 0,
+      "title": "Byte Size",
+      "type": "integer"
+    },
+    "completed_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Completed At"
+    },
+    "conversation_count": {
+      "minimum": 0,
+      "title": "Conversation Count",
+      "type": "integer"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "download_urls": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Download Urls",
+      "type": "array"
+    },
+    "error_summary": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error Summary"
+    },
+    "export_id": {
+      "format": "uuid",
+      "title": "Export Id",
+      "type": "string"
+    },
+    "kind": {
+      "title": "Kind",
+      "type": "string"
+    },
+    "manifest_s3_key": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Manifest S3 Key"
+    },
+    "manifest_sha256": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Manifest Sha256"
+    },
+    "parts": {
+      "items": {
+        "type": "object"
+      },
+      "title": "Parts",
+      "type": "array"
+    },
+    "record_count": {
+      "minimum": 0,
+      "title": "Record Count",
+      "type": "integer"
+    },
+    "s3_prefix": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "S3 Prefix"
+    },
+    "status": {
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "export_id",
+    "kind",
+    "status",
+    "conversation_count",
+    "record_count",
+    "byte_size",
+    "created_at"
+  ],
+  "title": "ExportOut",
+  "type": "object"
+}

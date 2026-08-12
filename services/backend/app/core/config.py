@@ -1,0 +1,270 @@
+"""Application settings.
+
+Every value is read from the environment. Secrets are preferentially read from
+`*_FILE` paths (root-owned files rendered at deploy time from SSM Parameter
+Store) so that secret material never lands in an image layer, a compose file or
+a process listing.
+"""
+
+from __future__ import annotations
+
+import functools
+import os
+from pathlib import Path
+from typing import Annotated, Literal
+
+from pydantic import Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+Environment = Literal["development", "test", "staging", "production"]
+
+
+def _read_secret_file(path: str | None) -> str | None:
+    """Return the stripped contents of a secret file, or None when unusable."""
+    if not path:
+        return None
+    p = Path(path)
+    try:
+        if p.is_file():
+            value = p.read_text(encoding="utf-8").strip()
+            return value or None
+    except OSError:
+        return None
+    return None
+
+
+def _csv(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=None,
+        extra="ignore",
+        case_sensitive=False,
+    )
+
+    # ---- Application ------------------------------------------------------
+    environment: Environment = "development"
+    app_name: str = "techsara-chat-archive"
+    app_version: str = "1.0.0"
+    public_base_url: str = "https://archive.example.com"
+    api_base_path: str = "/api/v1"
+    git_sha: str = "unknown"
+
+    # ---- Database ---------------------------------------------------------
+    database_url: str = (
+        "postgresql+asyncpg://techsara_app:devonly_change_me@postgres:5432/techsara_chat_archive"
+    )
+    postgres_password_file: str | None = None
+    database_pool_size: int = 20
+    database_max_overflow: int = 20
+    database_statement_timeout_ms: int = 30_000
+
+    # ---- AWS / S3 ---------------------------------------------------------
+    aws_region: str = "us-east-1"
+    s3_bucket: str = "replace-account-region-techsara-chat-archive"
+    s3_endpoint_url: str | None = None
+    s3_use_path_style: bool = False
+    s3_encryption_mode: Literal["SSE-S3", "SSE-KMS"] = "SSE-S3"
+    s3_kms_key_id: str | None = None
+    presigned_upload_ttl_seconds: Annotated[int, Field(ge=30, le=3600)] = 300
+    presigned_download_ttl_seconds: Annotated[int, Field(ge=30, le=3600)] = 300
+    max_attachment_bytes: int = 20 * 1024 * 1024
+
+    # ---- Authentication ---------------------------------------------------
+    oidc_issuer: str = "https://accounts.google.com"
+    oidc_client_id: str = "replace-me"
+    oidc_client_secret_file: str | None = None
+    oidc_client_secret: str | None = None
+    oidc_jwks_url: str | None = None
+    oidc_required_hd: str | None = None
+    allowed_email_domains: str = "example.com"
+    extension_ids: str = ""
+    admin_origins: str = ""
+    jwt_secret_file: str | None = None
+    jwt_secret: str = "devonly_insecure_signing_key_change_me"  # noqa: S105 - dev placeholder
+    access_token_ttl_seconds: int = 1800
+    refresh_token_ttl_seconds: int = 1_209_600
+    dev_auth_enabled: bool = True
+
+    # ---- Capture policy gates --------------------------------------------
+    managed_workspace_label: str = "TechSara's Workspace"
+    managed_workspace_ids: str = ""
+    browser_content_capture_enabled: bool = False
+    openai_written_authorization_confirmed: bool = False
+    auto_archive_current_open_chat: bool = True
+    attachment_capture_enabled: bool = True
+    personal_workspace_capture_enabled: bool = False
+    capture_unsent_drafts: bool = False
+    kill_switch_enabled: bool = False
+    config_signing_key_file: str | None = None
+    config_signing_key: str = "devonly_insecure_config_key_change_me"
+
+    # ---- Compliance poller ------------------------------------------------
+    compliance_poll_enabled: bool = False
+    openai_compliance_base_url: str | None = None
+    openai_compliance_log_path: str | None = None
+    openai_compliance_files_path: str | None = None
+    openai_compliance_api_key_file: str | None = None
+    openai_compliance_api_key: str | None = None
+    compliance_poll_interval_seconds: int = 300
+    compliance_overlap_seconds: int = 600
+    compliance_page_size: int = 100
+    compliance_max_pages_per_cycle: int = 50
+
+    # ---- Retention / export ----------------------------------------------
+    training_export_enabled: bool = False
+    raw_retention_days: int = 365
+    backup_retention_days: int = 90
+    offline_queue_max_items: int = 10_000
+    offline_queue_max_bytes: int = 52_428_800
+    offline_queue_max_age_days: int = 7
+
+    # ---- Runtime ----------------------------------------------------------
+    log_level: str = "INFO"
+    log_format: Literal["json", "console"] = "json"
+    log_message_content: bool = False
+    rate_limit_requests_per_minute: int = 300
+    rate_limit_burst: int = 60
+    max_request_bytes: int = 2_621_440  # 2.5 MiB, covers a 2 MiB batch + framing
+    max_batch_items: int = 100
+    worker_concurrency: int = 2
+    worker_poll_interval_seconds: float = 2.0
+    worker_stale_lock_seconds: int = 300
+    job_queue_backpressure_threshold: int = 50_000
+    api_workers: int = 3
+
+    # ---- Derived / validated ---------------------------------------------
+    @field_validator("api_base_path")
+    @classmethod
+    def _normalise_base_path(cls, v: str) -> str:
+        if not v.startswith("/"):
+            v = "/" + v
+        return v.rstrip("/")
+
+    @model_validator(mode="after")
+    def _load_secret_files(self) -> Settings:
+        """Prefer file-based secrets; fall back to inline values for dev."""
+        jwt_from_file = _read_secret_file(self.jwt_secret_file)
+        if jwt_from_file:
+            object.__setattr__(self, "jwt_secret", jwt_from_file)
+
+        cfg_from_file = _read_secret_file(self.config_signing_key_file)
+        if cfg_from_file:
+            object.__setattr__(self, "config_signing_key", cfg_from_file)
+
+        oidc_from_file = _read_secret_file(self.oidc_client_secret_file)
+        if oidc_from_file:
+            object.__setattr__(self, "oidc_client_secret", oidc_from_file)
+
+        compliance_from_file = _read_secret_file(self.openai_compliance_api_key_file)
+        if compliance_from_file:
+            object.__setattr__(self, "openai_compliance_api_key", compliance_from_file)
+
+        pg_from_file = _read_secret_file(self.postgres_password_file)
+        if pg_from_file and "REPLACE" in self.database_url:
+            object.__setattr__(
+                self, "database_url", self.database_url.replace("REPLACE", pg_from_file)
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _production_guardrails(self) -> Settings:
+        """Fail closed on unsafe production configuration."""
+        if self.environment != "production":
+            return self
+
+        problems: list[str] = []
+        if self.dev_auth_enabled:
+            problems.append("DEV_AUTH_ENABLED must be false in production")
+        if "devonly" in self.jwt_secret or len(self.jwt_secret) < 32:
+            problems.append("JWT_SECRET must be a strong non-default secret in production")
+        if "devonly" in self.config_signing_key or len(self.config_signing_key) < 32:
+            problems.append("CONFIG_SIGNING_KEY must be a strong non-default secret in production")
+        if "devonly" in self.database_url or "REPLACE" in self.database_url:
+            problems.append("DATABASE_URL still contains a placeholder password")
+        if self.s3_endpoint_url:
+            problems.append("S3_ENDPOINT_URL must be empty in production (MinIO is dev-only)")
+        if not self.public_base_url.startswith("https://"):
+            problems.append("PUBLIC_BASE_URL must be https in production")
+        if self.log_message_content:
+            problems.append("LOG_MESSAGE_CONTENT must be false in production")
+        if not self.allowed_domains:
+            problems.append("ALLOWED_EMAIL_DOMAINS must be set in production")
+        if self.oidc_client_id in ("", "replace-me"):
+            problems.append("OIDC_CLIENT_ID must be configured in production")
+        if problems:
+            raise ValueError("Unsafe production configuration: " + "; ".join(problems))
+        return self
+
+    # ---- Convenience accessors -------------------------------------------
+    @property
+    def allowed_domains(self) -> list[str]:
+        return [d.lower() for d in _csv(self.allowed_email_domains)]
+
+    @property
+    def extension_id_list(self) -> list[str]:
+        return [e for e in _csv(self.extension_ids) if e and e != "replace-after-build"]
+
+    @property
+    def admin_origin_list(self) -> list[str]:
+        return _csv(self.admin_origins)
+
+    @property
+    def managed_workspace_id_list(self) -> list[str]:
+        return _csv(self.managed_workspace_ids)
+
+    @property
+    def allowed_origins(self) -> list[str]:
+        origins = [f"chrome-extension://{eid}" for eid in self.extension_id_list]
+        origins.extend(self.admin_origin_list)
+        return origins
+
+    @property
+    def jwks_url(self) -> str:
+        if self.oidc_jwks_url:
+            return self.oidc_jwks_url
+        return self.oidc_issuer.rstrip("/") + "/.well-known/jwks.json"
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment == "production"
+
+    @property
+    def dev_auth_allowed(self) -> bool:
+        """Dev identity provider is hard-blocked in production."""
+        return self.dev_auth_enabled and not self.is_production
+
+    @property
+    def browser_capture_active(self) -> bool:
+        """Browser content extraction requires BOTH gates plus no kill switch."""
+        return (
+            self.browser_content_capture_enabled
+            and self.openai_written_authorization_confirmed
+            and not self.kill_switch_enabled
+        )
+
+    @property
+    def libpq_database_url(self) -> str:
+        """Plain libpq DSN (psql / pg_dump), derived from the SQLAlchemy URL."""
+        return self.database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+
+
+@functools.lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings()
+
+
+def reset_settings_cache() -> None:
+    """Test helper: drop the cached settings singleton."""
+    get_settings.cache_clear()
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}

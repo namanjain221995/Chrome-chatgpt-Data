@@ -1,0 +1,49 @@
+{
+  "type": "object",
+  "title": "TechSara ChatGPT Archive managed policy",
+  "description": "Organization policy delivered through Chrome Enterprise. These values point the extension at the company backend; every capture decision is still made server-side.",
+  "properties": {
+    "apiBaseUrl": {
+      "title": "Backend base URL",
+      "description": "HTTPS base URL of the company archive backend, e.g. https://archive.example.com",
+      "type": "string"
+    },
+    "organizationSlug": {
+      "title": "Organization slug",
+      "type": "string"
+    },
+    "oidcClientId": {
+      "title": "Google OIDC client id used by the extension",
+      "type": "string"
+    },
+    "allowedEmailDomains": {
+      "title": "Allowed company email domains",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "managedWorkspaceLabel": {
+      "title": "Managed workspace label shown by ChatGPT",
+      "type": "string"
+    },
+    "managedWorkspaceIds": {
+      "title": "Managed workspace identifiers",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "privacyNoticeUrl": {
+      "title": "Employee privacy notice URL",
+      "type": "string"
+    },
+    "supportContact": {
+      "title": "IT support contact",
+      "type": "string"
+    },
+    "enabled": {
+      "title": "Policy-level enable switch",
+      "description": "Setting false disables the extension. Setting true does NOT enable capture: the server-side gates still decide.",
+      "type": "boolean"
+    }
+  },
+  "required": ["apiBaseUrl"],
+  "additionalProperties": false
+}

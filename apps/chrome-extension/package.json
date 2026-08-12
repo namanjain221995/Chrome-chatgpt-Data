@@ -1,0 +1,48 @@
+{
+  "name": "@techsara/chatgpt-archive-extension",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TechSara Managed ChatGPT Session Archive - Manifest V3 Chrome extension",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=18.18"
+  },
+  "scripts": {
+    "dev": "vite build --watch --mode development",
+    "build:pages": "vite build",
+    "build": "tsc --noEmit && vite build && ENTRY=content vite build --config vite.worker.config.ts && ENTRY=worker vite build --config vite.worker.config.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint \"src/**/*.{ts,tsx}\" \"tests/**/*.ts\" --max-warnings 0",
+    "lint:fix": "eslint \"src/**/*.{ts,tsx}\" \"tests/**/*.ts\" --fix",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "package": "node scripts/package.mjs",
+    "validate:manifest": "node scripts/validate-manifest.mjs",
+    "validate:schemas": "node scripts/validate-schemas.mjs"
+  },
+  "dependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "zod": "3.24.1"
+  },
+  "devDependencies": {
+    "@types/chrome": "0.0.287",
+    "@types/node": "20.17.10",
+    "@types/react": "18.3.17",
+    "@types/react-dom": "18.3.5",
+    "@typescript-eslint/eslint-plugin": "8.18.1",
+    "@typescript-eslint/parser": "8.18.1",
+    "@vitejs/plugin-react": "4.3.4",
+    "@vitest/coverage-v8": "2.1.8",
+    "ajv": "8.17.1",
+    "ajv-formats": "3.0.1",
+    "eslint": "8.57.1",
+    "fake-indexeddb": "6.0.0",
+    "jsdom": "25.0.1",
+    "typescript": "5.7.2",
+    "vite": "5.4.11",
+    "vitest": "2.1.8"
+  }
+}

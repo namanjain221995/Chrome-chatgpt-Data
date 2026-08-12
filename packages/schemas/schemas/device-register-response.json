@@ -1,0 +1,34 @@
+{
+  "$id": "https://schemas.techsara.example/chat-archive/1.0/device-register-response.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "device_id": {
+      "format": "uuid",
+      "title": "Device Id",
+      "type": "string"
+    },
+    "registered_at": {
+      "format": "date-time",
+      "title": "Registered At",
+      "type": "string"
+    },
+    "revoked": {
+      "title": "Revoked",
+      "type": "boolean"
+    },
+    "server_time": {
+      "format": "date-time",
+      "title": "Server Time",
+      "type": "string"
+    }
+  },
+  "required": [
+    "device_id",
+    "registered_at",
+    "revoked",
+    "server_time"
+  ],
+  "title": "DeviceRegisterOut",
+  "type": "object"
+}

@@ -1,0 +1,88 @@
+{
+  "$id": "https://schemas.techsara.example/chat-archive/1.0/sync-status-response.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "archived_conversation_count": {
+      "minimum": 0,
+      "title": "Archived Conversation Count",
+      "type": "integer"
+    },
+    "archived_message_count": {
+      "minimum": 0,
+      "title": "Archived Message Count",
+      "type": "integer"
+    },
+    "backpressure": {
+      "default": false,
+      "title": "Backpressure",
+      "type": "boolean"
+    },
+    "capture_enabled": {
+      "title": "Capture Enabled",
+      "type": "boolean"
+    },
+    "coverage_statement": {
+      "title": "Coverage Statement",
+      "type": "string"
+    },
+    "device_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Device Id"
+    },
+    "kill_switch": {
+      "title": "Kill Switch",
+      "type": "boolean"
+    },
+    "known_conversation_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Known Conversation Ids",
+      "type": "array"
+    },
+    "last_sync_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Last Sync At"
+    },
+    "queue_depth": {
+      "minimum": 0,
+      "title": "Queue Depth",
+      "type": "integer"
+    },
+    "server_time": {
+      "format": "date-time",
+      "title": "Server Time",
+      "type": "string"
+    }
+  },
+  "required": [
+    "server_time",
+    "device_id",
+    "last_sync_at",
+    "archived_conversation_count",
+    "archived_message_count",
+    "queue_depth",
+    "capture_enabled",
+    "kill_switch",
+    "coverage_statement"
+  ],
+  "title": "SyncStatusOut",
+  "type": "object"
+}

@@ -1,0 +1,99 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "techsara-chat-archive-backend"
+version = "1.0.0"
+description = "TechSara Managed ChatGPT Session Archive - FastAPI backend, worker and compliance poller"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+dependencies = [
+  "fastapi==0.115.6",
+  "uvicorn[standard]==0.34.0",
+  "gunicorn==23.0.0",
+  "pydantic==2.10.4",
+  "pydantic-settings==2.7.0",
+  "sqlalchemy[asyncio]==2.0.36",
+  "asyncpg==0.30.0",
+  "alembic==1.14.0",
+  "boto3==1.35.90",
+  "botocore==1.35.90",
+  "httpx==0.28.1",
+  "pyjwt[crypto]==2.10.1",
+  "cryptography==44.0.0",
+  "structlog==24.4.0",
+  "orjson==3.10.13",
+  "bleach==6.2.0",
+  "python-multipart==0.0.20",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==8.3.4",
+  "pytest-asyncio==0.25.0",
+  "pytest-cov==6.0.0",
+  "ruff==0.8.4",
+  "mypy==1.14.0",
+  "types-bleach==6.2.0.20241123",
+  "boto3-stubs[s3,ssm]==1.35.90",
+  "freezegun==1.5.1",
+]
+
+[project.scripts]
+techsara-worker = "app.workers.worker:main"
+techsara-compliance-poller = "app.workers.compliance_poller:main"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["."]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "ASYNC", "S", "T20", "RUF"]
+ignore = [
+  "S101",   # assert is fine in tests, and used for narrowing
+  "B008",   # FastAPI Depends() in defaults is the documented idiom
+  "S104",   # binding 0.0.0.0 inside a container is intentional
+  "RUF012", # ClassVar annotations not required for simple config dicts
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106", "S311", "T201"]
+"alembic/**" = ["E501", "N999"]
+"app/workers/**" = ["T201"]
+
+[tool.mypy]
+python_version = "3.12"
+plugins = []
+strict = false
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+no_implicit_optional = true
+check_untyped_defs = true
+ignore_missing_imports = true
+exclude = "(alembic/versions|tests)"
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+markers = [
+  "integration: requires a live PostgreSQL (and optionally MinIO) instance",
+]
+filterwarnings = [
+  "ignore::DeprecationWarning:botocore.*",
+]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/workers/__main__.py"]

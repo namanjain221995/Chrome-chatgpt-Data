@@ -1,0 +1,42 @@
+# Runs the Docker Compose stack as a system service so the archive comes back
+# automatically after a reboot, a kernel update or an instance stop/start.
+#
+# Install:
+#   sudo cp deploy/systemd/techsara-chat-archive.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now techsara-chat-archive
+
+[Unit]
+Description=TechSara Managed ChatGPT Session Archive
+Documentation=https://github.com/techsara/chat-archive
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/techsara-chat-archive
+EnvironmentFile=/opt/techsara-chat-archive/.env
+
+# Compose already waits for health checks, so a long start timeout is expected
+# on first boot when images still have to be pulled.
+TimeoutStartSec=900
+TimeoutStopSec=180
+
+ExecStartPre=/usr/bin/docker compose -f compose.yaml -f compose.prod.yaml pull --quiet
+ExecStart=/usr/bin/docker compose -f compose.yaml -f compose.prod.yaml up -d --remove-orphans
+ExecStop=/usr/bin/docker compose -f compose.yaml -f compose.prod.yaml down
+ExecReload=/usr/bin/docker compose -f compose.yaml -f compose.prod.yaml up -d --remove-orphans
+
+Restart=on-failure
+RestartSec=30
+
+# The unit only orchestrates Docker; it needs no extra privileges of its own.
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
