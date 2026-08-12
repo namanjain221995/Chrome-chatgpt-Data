@@ -2,8 +2,8 @@
 
 **Project:** TechSara Managed ChatGPT Session Archive
 **Started:** 2026-08-13
-**Status:** all local verification passed; the branch is not deployable until
-the final pushed commit also has a green GitHub Actions run.
+**Status:** complete. Refactor commit `e46127306a2a5eb1f6d396c49f3dec675f0f84d6`
+passed GitHub Actions run `31638440372` on 2026-08-13.
 
 ## Architecture checklist
 
@@ -49,9 +49,9 @@ the final pushed commit also has a green GitHub Actions run.
   round trips, PostgreSQL integration tests, extension checks, and bundle output.
 - [x] Run every required Make target and repair all local failures.
 - [x] Run the Compose smoke and available load scenario.
-- [ ] Commit and push the complete refactor.
-- [ ] Monitor the pushed GitHub Actions run and repair every remote failure.
-- [ ] Record the final green run URL/status and commit SHA.
+- [x] Commit and push the complete refactor.
+- [x] Monitor the pushed GitHub Actions run and repair every remote failure.
+- [x] Record the final green run URL/status and commit SHA.
 
 ## Verification results
 
@@ -70,15 +70,15 @@ the final pushed commit also has a green GitHub Actions run.
   handling, root-owned certificate files, special-character database secrets,
   non-root API execution, exact S3 settings, worker startup, and loopback-only
   pgAdmin. The local Compose smoke passed all 14 checks.
-- The four-scenario k6 smoke completed 63 requests with zero failed requests,
-  zero backpressure, 245 accepted messages, p50 56.73 ms, and p95 112.2 ms.
+- The final local four-scenario k6 smoke completed 65 requests with zero failed
+  requests, zero backpressure, 250 accepted messages, p50 45.92 ms, and p95
+  90.74 ms.
 - Retired-technology, prohibited-AWS-service, secret, pip-audit, and npm-audit
   checks passed with zero known dependency vulnerabilities.
 
 The first load run exposed a concurrent first-request workspace insert race.
 The policy service now performs an idempotent PostgreSQL insert and selects the
-canonical row; a two-session regression test covers the race. A locally green
-tree is not final completion; the remote Actions run must also be green.
+canonical row; a two-session regression test covers the race.
 
 GitHub Actions run `31636730931` passed six jobs but the container job found a
 cold-runner defect: the production smoke requested `--pull never` before its
@@ -92,7 +92,15 @@ a Compose-version difference: its global `--wait` rejected the deliberately
 healthcheck-free worker even though that worker was running. The production
 smoke now waits explicitly for healthy API/PostgreSQL/pgAdmin states and a
 running worker, which tests the intended contract without depending on that
-Compose-version behavior. A further replacement run is pending.
+Compose-version behavior. Run `31637848017` then exposed the same global-wait
+assumption in the development Compose smoke. The same explicit service-state
+contract was applied there and passed locally and remotely.
+
+The complete refactor commit `e46127306a2a5eb1f6d396c49f3dec675f0f84d6`
+passed all normal GitHub Actions jobs in green run
+<https://github.com/namanjain221995/Chrome-chatgpt-Data/actions/runs/31638440372>.
+The credentialed real-S3 prefix test remains an explicitly authorized
+`workflow_dispatch` job and was intentionally skipped by the ordinary push.
 
 ## External steps still intentionally manual
 
