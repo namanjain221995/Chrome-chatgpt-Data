@@ -73,20 +73,69 @@ jobs:
           private-key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
           host-key: ${{ vars.EC2_SSH_HOST_KEY || secrets.EC2_SSH_HOST_KEY }}
 
+      # A deployment must not be attempted before the external configuration
+      # exists. Missing SSM parameters or a missing tunnel token are reported as
+      # a skip with the exact list of what to create, not as a red build: the
+      # commit is fine, the environment is not ready yet.
       - name: Preflight the instance
+        id: preflight
         run: |
           set -Eeuo pipefail
-          ssh ec2 'bash -Eeuo pipefail -s' <<'REMOTE'
+          set +e
+          ssh ec2 'bash -Eeuo pipefail -s' <<'REMOTE' | tee /tmp/preflight.txt
           app_dir=/opt/techsara-chat-archive
-          [ -d "${app_dir}/.git" ] || { echo "::error::${app_dir} is not a git checkout"; exit 1; }
-          sudo -n true 2>/dev/null || { echo "::error::deployment user needs passwordless sudo"; exit 1; }
-          docker info >/dev/null 2>&1 || sudo docker info >/dev/null 2>&1 \
-            || { echo "::error::Docker is not usable"; exit 1; }
-          echo "preflight passed on $(hostname)"
+          fatal=0
+          notready=0
+
+          [ -d "${app_dir}/.git" ] || { echo "FATAL ${app_dir} is not a git checkout"; fatal=1; }
+          sudo -n true 2>/dev/null || { echo "FATAL deployment user needs passwordless sudo"; fatal=1; }
+          sudo docker info >/dev/null 2>&1 || { echo "FATAL Docker is not usable"; fatal=1; }
+          command -v aws >/dev/null 2>&1 || { echo "FATAL the AWS CLI is not installed"; fatal=1; }
+
+          if command -v aws >/dev/null 2>&1; then
+            aws sts get-caller-identity --region us-east-1 >/dev/null 2>&1 \
+              || { echo "NOTREADY the EC2 instance role is not usable"; notready=1; }
+            for name in postgres_password postgres_user postgres_db jwt_secret \
+                        config_signing_key cloudflare_tunnel_token public_base_url \
+                        oidc_client_id oidc_required_hd allowed_email_domains \
+                        managed_workspace_label; do
+              # Names only: no value is ever read here, decrypted or printed.
+              aws ssm get-parameter --name "/techsara-chat-archive/${name}" \
+                --region us-east-1 --query 'Parameter.Name' --output text >/dev/null 2>&1 \
+                || { echo "NOTREADY missing SSM parameter /techsara-chat-archive/${name}"; notready=1; }
+            done
+          fi
+
+          [ -d /srv/techsara-chat-archive ] \
+            || { echo "NOTREADY /srv/techsara-chat-archive is missing; run scripts/prepare_server_storage.sh"; notready=1; }
+
+          echo "HOST $(hostname)"
+          echo "FATAL_COUNT ${fatal}"
+          echo "NOTREADY_COUNT ${notready}"
           REMOTE
+          ssh_status=$?
+          set -e
+
+          if [ "${ssh_status}" -ne 0 ] || ! grep -q '^FATAL_COUNT ' /tmp/preflight.txt; then
+            echo "::error::could not complete the preflight over SSH"
+            exit 1
+          fi
+          if [ "$(sed -n 's/^FATAL_COUNT //p' /tmp/preflight.txt)" != "0" ]; then
+            grep '^FATAL ' /tmp/preflight.txt | sed 's/^FATAL /::error::/'
+            exit 1
+          fi
+          if [ "$(sed -n 's/^NOTREADY_COUNT //p' /tmp/preflight.txt)" != "0" ]; then
+            grep '^NOTREADY ' /tmp/preflight.txt | sed 's/^NOTREADY /::warning::/'
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "The instance is reachable but not configured yet; skipping the deployment."
+            exit 0
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+          echo "preflight passed; the instance is configured"
 
       - name: Deploy
         id: deploy
+        if: steps.preflight.outputs.ready == 'true'
         env:
           DEPLOY_SHA: ${{ steps.target.outputs.sha }}
           ACTOR: ${{ github.actor }}
@@ -111,14 +160,13 @@ jobs:
           REMOTE
 
       - name: Verify the deployed host
-        if: success()
+        if: success() && steps.preflight.outputs.ready == 'true'
         run: |
           set -Eeuo pipefail
           ssh ec2 'sudo /opt/techsara-chat-archive/scripts/verify_production.sh' | tee /tmp/verify.txt
 
       - name: Read back the recorded release
-        if: always()
-        id: release
+        if: always() && steps.preflight.outputs.ready == 'true'
         run: |
           set -Eeuo pipefail
           ssh ec2 'cat /opt/techsara-chat-archive/deploy/current-release 2>/dev/null || true' \
@@ -129,6 +177,7 @@ jobs:
         if: always()
         env:
           DEPLOY_SHA: ${{ steps.target.outputs.sha }}
+          READY: ${{ steps.preflight.outputs.ready }}
           RESULT: ${{ steps.deploy.outcome }}
         run: |
           {
@@ -137,22 +186,39 @@ jobs:
             echo "| Field | Value |"
             echo "| --- | --- |"
             echo "| Requested commit | \`${DEPLOY_SHA}\` |"
-            echo "| Deploy step | ${RESULT} |"
+            echo "| Instance configured | ${READY:-unknown} |"
+            echo "| Deploy step | ${RESULT:-skipped} |"
             echo "| Triggered by | ${{ github.actor }} |"
             echo "| Event | ${{ github.event_name }} |"
             echo
-            echo "### Recorded release on the instance"
-            echo '```'
-            cat /tmp/current-release.txt 2>/dev/null || echo "unavailable"
-            echo '```'
-            if [ -s /tmp/verify.txt ]; then
+
+            if [ "${READY}" != "true" ]; then
+              echo "### Deployment skipped"
               echo
-              echo "### Host verification"
+              echo "The commit passed CI, but the instance is not configured yet."
+              echo "Nothing on the host was changed. Outstanding items:"
+              echo
               echo '```'
-              cat /tmp/verify.txt
+              grep '^NOTREADY ' /tmp/preflight.txt 2>/dev/null | sed 's/^NOTREADY /- /' \
+                || echo "see the preflight step output"
               echo '```'
+              echo
+              echo "See docs/CLOUDFLARE_TUNNEL_SETUP.md and docs/GITHUB_SECRETS.md,"
+              echo "then re-run this workflow."
+            else
+              echo "### Recorded release on the instance"
+              echo '```'
+              cat /tmp/current-release.txt 2>/dev/null || echo "unavailable"
+              echo '```'
+              if [ -s /tmp/verify.txt ]; then
+                echo
+                echo "### Host verification"
+                echo '```'
+                cat /tmp/verify.txt
+                echo '```'
+              fi
+              echo
+              echo "Application images roll back automatically when a health check fails."
+              echo "Database migrations are never reversed automatically: see docs/ROLLBACK.md."
             fi
-            echo
-            echo "Application images roll back automatically when a health check fails."
-            echo "Database migrations are never reversed automatically: see docs/ROLLBACK.md."
           } >> "$GITHUB_STEP_SUMMARY"

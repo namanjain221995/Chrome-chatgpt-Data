@@ -1,16 +1,18 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
-  # Called by deploy.yml so a production deployment can only ever follow a full,
-  # green validation run of the exact commit being deployed.
+  # Called by deploy.yml (push to main) and release.yml (tag), so validation
+  # always runs for the exact commit being deployed or released, and a push to
+  # main does not start a second, competing run of the same jobs.
   workflow_call:
+  workflow_dispatch:
 
+# Scoped by calling workflow as well as ref: a CI run invoked by a deployment
+# must never cancel, or be cancelled by, a run invoked by anything else.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 # Least privilege: CI reads the repository and nothing else. It never needs a

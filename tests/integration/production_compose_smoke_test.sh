@@ -112,25 +112,34 @@ test "${healthy}" -eq 1
 "${COMPOSE[@]}" exec -T api curl -fsS \
   -H 'Host: archive.example.com' http://127.0.0.1:8000/health/ready | grep -q '"status":"ok"'
 
-# The API must not be reachable from the host: it publishes no port at all.
-api_ports="$(docker inspect -f '{{json .NetworkSettings.Ports}}' "$("${COMPOSE[@]}" ps -q api)")"
-test "${api_ports}" = '{"8000/tcp":null}' || {
-  echo "the API container unexpectedly publishes ports: ${api_ports}" >&2
-  exit 1
-}
-postgres_ports="$(docker inspect -f '{{json .NetworkSettings.Ports}}' "$("${COMPOSE[@]}" ps -q postgres)")"
-test "${postgres_ports}" = '{"5432/tcp":null}' || {
-  echo "PostgreSQL unexpectedly publishes ports: ${postgres_ports}" >&2
-  exit 1
+# Host bindings that actually exist, as "port/proto=ip:port" pairs. An exposed
+# but unpublished port has no binding; Docker renders that as either a null
+# entry or an absent key depending on version, so the entries are what get
+# compared rather than the raw JSON.
+host_bindings() {
+  docker inspect \
+    -f '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{$p}}={{.HostIp}}:{{.HostPort}} {{end}}{{end}}' \
+    "$("${COMPOSE[@]}" ps -q "$1")"
 }
 
-# pgAdmin is bound to loopback only.
-pgadmin_binding="$(docker inspect \
-  -f '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{$p}}={{.HostIp}}:{{.HostPort}} {{end}}{{end}}' \
-  "$("${COMPOSE[@]}" ps -q pgadmin)")"
+# Neither the API nor PostgreSQL may be reachable from the host at all.
+for private_service in api postgres worker; do
+  bindings="$(host_bindings "${private_service}")"
+  test -z "${bindings}" || {
+    echo "${private_service} unexpectedly publishes host ports: ${bindings}" >&2
+    exit 1
+  }
+done
+
+# pgAdmin is bound to loopback only, and the binding genuinely exists: a
+# container attached only to an internal network would silently get none.
+pgadmin_binding="$(host_bindings pgadmin)"
 case "${pgadmin_binding}" in
   *"80/tcp=127.0.0.1:15050"*) ;;
-  *) echo "pgAdmin is not loopback-bound: ${pgadmin_binding}" >&2; exit 1 ;;
+  *) echo "pgAdmin is not loopback-bound: ${pgadmin_binding:-<no binding at all>}" >&2; exit 1 ;;
+esac
+case "${pgadmin_binding}" in
+  *0.0.0.0*|*"[::]"*) echo "pgAdmin is bound to a public address: ${pgadmin_binding}" >&2; exit 1 ;;
 esac
 
 test "$("${COMPOSE[@]}" exec -T api id -u)" = "10001"
