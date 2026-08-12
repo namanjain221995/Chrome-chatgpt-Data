@@ -36,7 +36,27 @@ export CONFIG_SIGNING_KEY=smoke-test-config-key-not-for-production-use
 "${COMPOSE[@]}" build --quiet api
 ok "application image built from the working tree"
 
-"${COMPOSE[@]}" up -d --wait --wait-timeout 180 postgres api worker
+"${COMPOSE[@]}" up -d postgres api worker
+
+# Compose v5 treats --wait as an error when any selected long-running service
+# intentionally has no healthcheck. The worker is proven alive by its running
+# state while the API and PostgreSQL retain their stronger health checks.
+healthy=0
+for _ in $(seq 1 90); do
+  api_id="$("${COMPOSE[@]}" ps -q api)"
+  postgres_id="$("${COMPOSE[@]}" ps -q postgres)"
+  worker_id="$("${COMPOSE[@]}" ps -q worker)"
+  api_health="$(docker inspect -f '{{.State.Health.Status}}' "${api_id}" 2>/dev/null || true)"
+  postgres_health="$(docker inspect -f '{{.State.Health.Status}}' "${postgres_id}" 2>/dev/null || true)"
+  worker_state="$(docker inspect -f '{{.State.Status}}' "${worker_id}" 2>/dev/null || true)"
+  if [ "${api_health}" = healthy ] && [ "${postgres_health}" = healthy ] \
+      && [ "${worker_state}" = running ]; then
+    healthy=1
+    break
+  fi
+  sleep 2
+done
+test "${healthy}" -eq 1
 ok "PostgreSQL, API and worker started"
 "${COMPOSE[@]}" exec -T postgres pg_isready -U techsara_app -d techsara_chat_archive
 ok "PostgreSQL accepts connections"
