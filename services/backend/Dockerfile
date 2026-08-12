@@ -43,10 +43,20 @@ ENV PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:${PATH}" \
     GIT_SHA="${GIT_SHA}"
 
-# postgresql-client provides pg_dump/pg_restore for the backup sidecar, which
-# runs this same image; curl is used by the container health check.
+# The backup role must use the same pg_dump major version as PostgreSQL 16.
+# Debian 12 ships client 15, so use the official PostgreSQL Apt repository for
+# client 16. curl is also used by the container health check.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends postgresql-client curl tini \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && install -d /usr/share/postgresql-common/pgdg \
+ && curl --fail --show-error --silent \
+      -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+      https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+ && printf '%s\n' \
+      'deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main' \
+      > /etc/apt/sources.list.d/pgdg.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends postgresql-client-16 tini awscli \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd --gid 10001 techsara \
  && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin techsara

@@ -175,7 +175,7 @@ and per-IP limits are required.
 
 **Decision.** An in-process sliding window with bounded memory, with the per-key
 budget divided by `API_WORKERS` so the fleet-wide limit matches the configured
-value. Caddy applies coarse limits at the edge as a second layer.
+value. Cloudflare applies coarse controls at the edge as a second layer.
 
 **Cost.** The division is approximate: a client whose requests all land on one
 worker sees exactly `limit / workers`. Documented in SECURITY.md. A PostgreSQL-

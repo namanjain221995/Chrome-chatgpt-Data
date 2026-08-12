@@ -109,7 +109,7 @@ Add this to `scripts/backup_postgres.sh` once the instance role has
 Every service logs structured JSON to stdout, with rotation at 10 MB × 5 files.
 
 ```bash
-sudo docker compose -f compose.yaml -f compose.prod.yaml logs -f api
+sudo docker compose -f compose.prod.yaml logs -f api
 sudo docker compose ... logs --since 1h worker | jq 'select(.level=="error")'
 sudo docker compose ... logs api | jq 'select(.correlation_id=="abc123")'
 ```
@@ -144,7 +144,7 @@ SELECT count(*) FROM devices
 ## Alert routing
 
 CloudWatch alarms publish to the `techsara-chat-archive-alarms` SNS topic. Set
-`alarm_email` in Terraform and confirm the subscription. For a pager, subscribe
+Create the alarm destination manually and confirm the subscription. For a pager, subscribe
 your on-call integration to the same topic.
 
 ## What is deliberately not alerted

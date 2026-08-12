@@ -9,7 +9,8 @@ description = "TechSara Managed ChatGPT Session Archive - FastAPI backend, worke
 requires-python = ">=3.12"
 license = { text = "Proprietary" }
 dependencies = [
-  "fastapi==0.115.6",
+  "fastapi==0.141.1",
+  "starlette==1.6.0",
   "uvicorn[standard]==0.34.0",
   "gunicorn==23.0.0",
   "pydantic==2.10.4",
@@ -20,24 +21,25 @@ dependencies = [
   "boto3==1.35.90",
   "botocore==1.35.90",
   "httpx==0.28.1",
-  "pyjwt[crypto]==2.10.1",
-  "cryptography==44.0.0",
+  "pyjwt[crypto]==2.13.0",
+  "cryptography==50.0.0",
   "structlog==24.4.0",
-  "orjson==3.10.13",
-  "bleach==6.2.0",
-  "python-multipart==0.0.20",
+  "orjson==3.11.9",
+  "bleach==6.4.0",
+  "python-multipart==0.0.32",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "pytest==8.3.4",
-  "pytest-asyncio==0.25.0",
+  "pytest==9.1.1",
+  "pytest-asyncio==1.4.0",
   "pytest-cov==6.0.0",
   "ruff==0.8.4",
   "mypy==1.14.0",
   "types-bleach==6.2.0.20241123",
   "boto3-stubs[s3,ssm]==1.35.90",
   "freezegun==1.5.1",
+  "pip-audit==2.7.3",
 ]
 
 [project.scripts]
@@ -88,7 +90,8 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 markers = [
-  "integration: requires a live PostgreSQL (and optionally MinIO) instance",
+  "integration: requires a live PostgreSQL instance",
+  "real_s3: explicitly authorized test against a dedicated AWS S3 prefix",
 ]
 filterwarnings = [
   "ignore::DeprecationWarning:botocore.*",

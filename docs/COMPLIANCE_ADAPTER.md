@@ -121,9 +121,10 @@ Alert on: `lag_seconds` above one hour, `consecutive_errors` ≥ 3, or
 4. Set `COMPLIANCE_POLL_ENABLED=true`.
 5. Redeploy and watch the first cycles:
    ```bash
-   sudo docker compose -f compose.yaml -f compose.prod.yaml logs -f compliance-poller
+   sudo docker compose -f compose.prod.yaml logs -f compliance-poller
    ```
-6. Confirm objects land under `s3://<bucket>/raw/compliance/`.
+6. Confirm objects land under `s3://techsara-chatgpt/raw/compliance/` in
+   `us-east-1`.
 7. Check the admin health summary shows `configured: true` and a recent
    `last_success_at`.
 

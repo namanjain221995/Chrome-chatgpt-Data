@@ -10,6 +10,7 @@ import uuid
 from dataclasses import dataclass
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
@@ -177,19 +178,43 @@ async def resolve_workspace(
             existing.label = ref.label
         return WorkspaceDecision(existing, ws_hash, reason)
 
-    workspace = Workspace(
-        id=uuid.uuid4(),
-        organization_id=organization.id,
-        source_workspace_id=ref.source_workspace_id,
-        label=ref.label,
-        workspace_hash=ws_hash,
-        kind=WorkspaceKind.MANAGED_COMPANY,
-        verified_at=utcnow(),
-        capture_enabled=True,
+    workspace_id = uuid.uuid4()
+    statement = (
+        pg_insert(Workspace)
+        .values(
+            id=workspace_id,
+            organization_id=organization.id,
+            source_workspace_id=ref.source_workspace_id,
+            label=ref.label,
+            workspace_hash=ws_hash,
+            kind=WorkspaceKind.MANAGED_COMPANY,
+            verified_at=utcnow(),
+            capture_enabled=True,
+        )
+        .on_conflict_do_nothing(constraint="uq_workspaces_org_hash")
+        .returning(Workspace.id)
     )
-    session.add(workspace)
-    await session.flush()
-    logger.info("workspace_verified", workspace_hash=ws_hash, reason=reason)
+    created_id = (await session.execute(statement)).scalar_one_or_none()
+    workspace = (
+        await session.execute(
+            select(Workspace).where(
+                Workspace.organization_id == organization.id,
+                Workspace.workspace_hash == ws_hash,
+            )
+        )
+    ).scalar_one()
+
+    if workspace.kind != WorkspaceKind.MANAGED_COMPANY or not workspace.capture_enabled:
+        raise PolicyError(
+            "Stored workspace record does not permit capture",
+            code="workspace_capture_disabled",
+        )
+    if ref.source_workspace_id and not workspace.source_workspace_id:
+        workspace.source_workspace_id = ref.source_workspace_id
+    if ref.label and not workspace.label:
+        workspace.label = ref.label
+    if created_id is not None:
+        logger.info("workspace_verified", workspace_hash=ws_hash, reason=reason)
     return WorkspaceDecision(workspace, ws_hash, reason)
 
 

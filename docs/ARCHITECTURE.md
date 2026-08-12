@@ -18,12 +18,12 @@
                 │ HTTPS (batched, idempotent)          │ presigned PUT
                 ▼                                      ▼
 ┌────────────────────────────────────────┐   ┌──────────────────────────────┐
-│ EC2 (one instance, Docker Compose)     │   │ Amazon S3 (private)          │
+│ EC2 (one instance)                     │   │ Amazon S3 (private)          │
 │                                        │   │                              │
-│  caddy   :443 ── the only ingress      │   │  raw/events/…                │
-│    │                                   │   │  normalized/conversations/…  │
-│    ▼                                   │   │  attachments/quarantine|clean│
-│  api (FastAPI, gunicorn+uvicorn) ──────┼──▶│  exports/jsonl/…             │
+│  Docker Compose                        │   │  raw/events/…                │
+│  api :443 (FastAPI, direct TLS) ───────┼──▶│  normalized/conversations/…  │
+│    │                                   │   │  attachments/quarantine|clean│
+│    │                                   │   │  exports/jsonl/…             │
 │    │                                   │   │  backups/postgres/…          │
 │    ▼                                   │   └──────────────────────────────┘
 │  postgres:16  (private network only)   │
@@ -35,8 +35,10 @@
 └────────────────────────────────────────┘
 ```
 
-Everything except Caddy is on a private Docker network. PostgreSQL, pgAdmin and
-MinIO publish no public port, in any environment.
+Cloudflare proxies directly to FastAPI's Origin CA TLS listener on port 443;
+the security group accepts that port only from Cloudflare source ranges.
+PostgreSQL stays on an internal Docker network. pgAdmin is an optional profile
+bound to `127.0.0.1:5050` for SSM port forwarding.
 
 ---
 
@@ -145,7 +147,7 @@ so a retry after a backfill reuses the same key.
 | Worker killed mid-job | Stale-lock recovery returns the job to pending |
 | S3 unavailable | Archive job fails and retries; the event stays unarchived and visible in the admin summary |
 | Queue saturated | API returns 503 `backpressure`; clients back off |
-| Database down | API readiness fails; Caddy still serves; clients queue locally |
+| Database down | API readiness fails; Cloudflare returns an origin error; clients queue locally |
 | Bad item in a batch | SAVEPOINT isolates it; the rest of the batch still commits |
 | Instance lost | Restore from the tested backup onto a replacement instance |
 

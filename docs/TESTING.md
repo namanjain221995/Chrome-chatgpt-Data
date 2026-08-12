@@ -4,14 +4,15 @@
 
 | Layer | Count | Needs | Command |
 | --- | --- | --- | --- |
-| Backend unit | 149 | nothing | `make test-backend` |
-| Backend integration | 111 | PostgreSQL | `make test-integration` |
+| Backend unit | 166 | nothing | `make test-backend` |
+| Backend integration | 112 | PostgreSQL | `make test-integration` |
 | Extension | 105 | nothing | `make test-extension` |
-| Compose smoke | 20 checks | Docker | `make test-compose` |
-| Load | 4 scenarios | k6 + an environment | `make load-test` |
+| Compose smoke | 14 checks | Docker | `make test-compose` |
+| Production Compose | secrets and bindings | Docker | `make test-production-compose` |
+| Load smoke | 4 scenarios | Docker | `make load-test` |
 
-`make verify` runs everything except the compose smoke test and the load test,
-and starts the database it needs.
+`make verify` runs every row in this table, the migration round trip, schema
+drift, image build, direct origin TLS, security checks, and deterministic artifacts.
 
 ## Backend unit tests
 
@@ -91,16 +92,23 @@ jsdom plus sanitized fixtures. **No test ever contacts a live ChatGPT account.**
 make test-compose
 ```
 
-Twenty checks against a real stack: clean start, PostgreSQL health, migrations
-on an empty database, partition creation, API readiness through Caddy, signed
-config, a real HTTP batch ingest, replay deduplication, the worker archiving to
-MinIO, snapshot creation, a full restart with no data loss, and a backup that
-restores into a clean database. Destroys its own stack on exit.
+Fourteen checks against a real stack: clean start, PostgreSQL health, migrations
+on an empty database, direct loopback API readiness, signed config, a real HTTP
+batch ingest, replay deduplication, a full restart with no data loss, and a
+backup that restores into a clean database. The worker starts successfully and
+is then stopped before ingestion so an offline test never attempts an AWS write.
+AWS requests are covered by Stubber and the explicit dedicated-prefix workflow.
+The stack is destroyed on exit.
 
 ## Load tests
 
-See [SCALING_250_USERS.md](SCALING_250_USERS.md). Never against production, never
-against a live ChatGPT account.
+`make load-test` uses a pinned k6 container and an isolated local API/database
+stack to run short sustained, burst, attachment-metadata, and status-polling
+scenarios. It writes ignored reports under `artifacts/`. The full five-minute
+capacity profile remains available in `tests/load/k6-ingest.js` for a dedicated
+load environment with an out-of-band access token. See
+[SCALING_250_USERS.md](SCALING_250_USERS.md). Never run it against production or
+a live ChatGPT account.
 
 ## Fixtures
 

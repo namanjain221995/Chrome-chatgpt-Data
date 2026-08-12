@@ -1,14 +1,6 @@
-# =============================================================================
-# Development stack.
-#
-# `docker compose up` gives a complete local system: PostgreSQL 16, the API,
-# the worker, the compliance poller (idle unless configured), Caddy, MinIO as a
-# local S3 and — behind the `admin` profile — pgAdmin bound to loopback only.
-#
-# Production overrides live in compose.prod.yaml. Nothing here is intended to
-# run in AWS: MinIO in particular is refused by the production settings guard.
-# =============================================================================
-
+# Local development and PostgreSQL integration stack. Object-storage tests use
+# botocore stubs; optional manual tests use the real AWS API and an isolated key
+# prefix. No object-storage server is part of this stack.
 name: techsara-chat-archive
 
 x-logging: &default-logging
@@ -19,21 +11,19 @@ x-logging: &default-logging
 
 x-app-env: &app-env
   ENVIRONMENT: ${ENVIRONMENT:-development}
-  APP_NAME: ${APP_NAME:-techsara-chat-archive}
-  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost}
-  API_BASE_PATH: ${API_BASE_PATH:-/api/v1}
+  APP_NAME: techsara-chat-archive
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://127.0.0.1:8000}
+  API_BASE_PATH: /api/v1
   DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-techsara_app}:${POSTGRES_PASSWORD:-devonly_change_me}@postgres:5432/${POSTGRES_DB:-techsara_chat_archive}
-  DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-20}
-  DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-20}
-  AWS_REGION: ${AWS_REGION:-us-east-1}
-  S3_BUCKET: ${S3_BUCKET:-techsara-chat-archive-dev}
-  S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://minio:9000}
-  S3_USE_PATH_STYLE: ${S3_USE_PATH_STYLE:-true}
-  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
-  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+  DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-10}
+  DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-10}
+  AWS_REGION: us-east-1
+  S3_BUCKET: techsara-chatgpt
+  S3_ENDPOINT_URL: ""
+  S3_USE_PATH_STYLE: "false"
   OIDC_ISSUER: ${OIDC_ISSUER:-https://accounts.google.com}
   OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-replace-me}
-  OIDC_REQUIRED_HD: ${OIDC_REQUIRED_HD:-}
+  OIDC_REQUIRED_HD: ${OIDC_REQUIRED_HD:-example.com}
   ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS:-example.com}
   EXTENSION_IDS: ${EXTENSION_IDS:-}
   JWT_SECRET: ${JWT_SECRET:-devonly_insecure_signing_key_change_me}
@@ -43,26 +33,31 @@ x-app-env: &app-env
   MANAGED_WORKSPACE_IDS: ${MANAGED_WORKSPACE_IDS:-}
   BROWSER_CONTENT_CAPTURE_ENABLED: ${BROWSER_CONTENT_CAPTURE_ENABLED:-false}
   OPENAI_WRITTEN_AUTHORIZATION_CONFIRMED: ${OPENAI_WRITTEN_AUTHORIZATION_CONFIRMED:-false}
-  AUTO_ARCHIVE_CURRENT_OPEN_CHAT: ${AUTO_ARCHIVE_CURRENT_OPEN_CHAT:-true}
-  ATTACHMENT_CAPTURE_ENABLED: ${ATTACHMENT_CAPTURE_ENABLED:-true}
-  KILL_SWITCH_ENABLED: ${KILL_SWITCH_ENABLED:-false}
-  COMPLIANCE_POLL_ENABLED: ${COMPLIANCE_POLL_ENABLED:-false}
-  OPENAI_COMPLIANCE_BASE_URL: ${OPENAI_COMPLIANCE_BASE_URL:-}
-  OPENAI_COMPLIANCE_LOG_PATH: ${OPENAI_COMPLIANCE_LOG_PATH:-}
-  OPENAI_COMPLIANCE_FILES_PATH: ${OPENAI_COMPLIANCE_FILES_PATH:-}
   TRAINING_EXPORT_ENABLED: ${TRAINING_EXPORT_ENABLED:-false}
-  LOG_LEVEL: ${LOG_LEVEL:-INFO}
-  LOG_FORMAT: ${LOG_FORMAT:-json}
-  LOG_MESSAGE_CONTENT: ${LOG_MESSAGE_CONTENT:-false}
-  RATE_LIMIT_REQUESTS_PER_MINUTE: ${RATE_LIMIT_REQUESTS_PER_MINUTE:-300}
-  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+  COMPLIANCE_POLL_ENABLED: ${COMPLIANCE_POLL_ENABLED:-false}
+  LOG_MESSAGE_CONTENT: "false"
   API_WORKERS: ${API_WORKERS:-2}
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+
+x-app-service: &app-service
+  build:
+    context: ./services/backend
+    dockerfile: Dockerfile
+    args:
+      GIT_SHA: ${GIT_SHA:-dev}
+  image: ${IMAGE_REPOSITORY:-techsara/chat-archive-backend}:${IMAGE_TAG:-local}
+  environment: *app-env
+  networks: [backend, egress]
+  logging: *default-logging
+  read_only: true
+  tmpfs: ["/tmp:size=128m"]
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.14-alpine
     restart: unless-stopped
-    # No host port: PostgreSQL is reachable only on the private network.
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-techsara_chat_archive}
       POSTGRES_USER: ${POSTGRES_USER:-techsara_app}
@@ -78,17 +73,9 @@ services:
       - -c
       - maintenance_work_mem=256MB
       - -c
-      - effective_cache_size=2GB
-      - -c
-      - max_connections=200
+      - max_connections=100
       - -c
       - wal_compression=on
-      - -c
-      - checkpoint_completion_target=0.9
-      - -c
-      - log_min_duration_statement=1000
-      - -c
-      - track_io_timing=on
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -101,85 +88,24 @@ services:
     logging: *default-logging
     security_opt: ["no-new-privileges:true"]
 
-  minio:
-    # Development only. Production uses real S3 and the settings guard refuses
-    # to start with S3_ENDPOINT_URL set.
-    image: minio/minio:RELEASE.2024-11-07T00-52-20Z
-    profiles: [dev, default]
-    restart: unless-stopped
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
-    ports:
-      # Parameterised so a parallel stack (the smoke test) does not collide.
-      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
-      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
-    volumes:
-      - minio-data:/data
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 15s
-    networks: [backend]
-    logging: *default-logging
-    security_opt: ["no-new-privileges:true"]
-
-  minio-init:
-    image: minio/mc:RELEASE.2024-11-21T17-21-54Z
-    profiles: [dev, default]
-    depends_on:
-      minio:
-        condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-      mc alias set local http://minio:9000 ${AWS_ACCESS_KEY_ID:-minioadmin} ${AWS_SECRET_ACCESS_KEY:-minioadmin} &&
-      mc mb --ignore-existing local/${S3_BUCKET:-techsara-chat-archive-dev} &&
-      mc version enable local/${S3_BUCKET:-techsara-chat-archive-dev} &&
-      mc anonymous set none local/${S3_BUCKET:-techsara-chat-archive-dev} &&
-      echo 'minio bucket ready'"
-    networks: [backend]
-    logging: *default-logging
-    restart: "no"
-
   migrate:
-    build:
-      context: ./services/backend
-      dockerfile: Dockerfile
-      args:
-        GIT_SHA: ${GIT_SHA:-dev}
-    image: ${IMAGE_REPOSITORY:-techsara/chat-archive-backend}:${IMAGE_TAG:-local}
+    <<: *app-service
     command: ["alembic", "upgrade", "head"]
-    environment: *app-env
+    restart: "no"
     depends_on:
       postgres:
         condition: service_healthy
-    networks: [backend]
-    logging: *default-logging
-    restart: "no"
-    read_only: true
-    tmpfs: ["/tmp:size=64m"]
-    security_opt: ["no-new-privileges:true"]
-    cap_drop: [ALL]
 
   api:
-    build:
-      context: ./services/backend
-      dockerfile: Dockerfile
-      args:
-        GIT_SHA: ${GIT_SHA:-dev}
-    image: ${IMAGE_REPOSITORY:-techsara/chat-archive-backend}:${IMAGE_TAG:-local}
+    <<: *app-service
     restart: unless-stopped
-    environment: *app-env
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    # No published port: Caddy is the only ingress.
-    expose: ["8000"]
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health/live"]
       interval: 15s
@@ -187,80 +113,41 @@ services:
       retries: 5
       start_period: 20s
     stop_grace_period: 30s
-    networks: [backend]
-    logging: *default-logging
-    read_only: true
-    tmpfs: ["/tmp:size=128m"]
-    security_opt: ["no-new-privileges:true"]
-    cap_drop: [ALL]
 
   worker:
-    build:
-      context: ./services/backend
-      dockerfile: Dockerfile
-      args:
-        GIT_SHA: ${GIT_SHA:-dev}
-    image: ${IMAGE_REPOSITORY:-techsara/chat-archive-backend}:${IMAGE_TAG:-local}
+    <<: *app-service
     restart: unless-stopped
     command: ["python", "-m", "app.workers.worker"]
-    environment: *app-env
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    stop_grace_period: 60s
-    # The image's HTTP health check belongs to the API; this service
-    # serves no port, and an inherited check would report it unhealthy.
     healthcheck:
       disable: true
-    networks: [backend]
-    logging: *default-logging
-    read_only: true
-    tmpfs: ["/tmp:size=256m"]
-    security_opt: ["no-new-privileges:true"]
-    cap_drop: [ALL]
+    stop_grace_period: 60s
 
   compliance-poller:
-    build:
-      context: ./services/backend
-      dockerfile: Dockerfile
-      args:
-        GIT_SHA: ${GIT_SHA:-dev}
-    image: ${IMAGE_REPOSITORY:-techsara/chat-archive-backend}:${IMAGE_TAG:-local}
+    <<: *app-service
+    profiles: [compliance]
     restart: unless-stopped
     command: ["python", "-m", "app.workers.compliance_poller"]
-    environment: *app-env
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    stop_grace_period: 30s
-    # The image's HTTP health check belongs to the API; this service
-    # serves no port, and an inherited check would report it unhealthy.
     healthcheck:
       disable: true
-    networks: [backend]
-    logging: *default-logging
-    read_only: true
-    tmpfs: ["/tmp:size=64m"]
-    security_opt: ["no-new-privileges:true"]
-    cap_drop: [ALL]
 
   backup:
-    build:
-      context: ./services/backend
-      dockerfile: Dockerfile
-      args:
-        GIT_SHA: ${GIT_SHA:-dev}
-    image: ${IMAGE_REPOSITORY:-techsara/chat-archive-backend}:${IMAGE_TAG:-local}
+    <<: *app-service
+    profiles: [backup]
     restart: unless-stopped
     entrypoint: ["/bin/sh", "/opt/scripts/backup_loop.sh"]
     environment:
       <<: *app-env
       BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
-      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-90}
       PGHOST: postgres
       PGUSER: ${POSTGRES_USER:-techsara_app}
       PGPASSWORD: ${POSTGRES_PASSWORD:-devonly_change_me}
@@ -271,44 +158,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    # The image's HTTP health check belongs to the API; this service
-    # serves no port, and an inherited check would report it unhealthy.
     healthcheck:
       disable: true
-    networks: [backend]
-    logging: *default-logging
-    security_opt: ["no-new-privileges:true"]
-
-  caddy:
-    image: caddy:2.8-alpine
-    restart: unless-stopped
-    ports:
-      - "${CADDY_HTTP_PORT:-8080}:80"
-      - "${CADDY_HTTPS_PORT:-8443}:443"
-    environment:
-      CADDY_DOMAIN: ${CADDY_DOMAIN:-localhost}
-      CADDY_EMAIL: ${CADDY_EMAIL:-ops@example.com}
-      MAX_REQUEST_BYTES: ${MAX_REQUEST_BYTES:-2621440}
-    volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
-    depends_on:
-      api:
-        condition: service_started
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:2019/config/"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-    networks: [backend]
-    logging: *default-logging
-    security_opt: ["no-new-privileges:true"]
 
   pgadmin:
-    # Optional administration UI. Never exposed beyond loopback; reach it from
-    # a workstation through SSM Session Manager port forwarding.
     image: dpage/pgadmin4:8.14
     profiles: [admin]
     restart: unless-stopped
@@ -317,10 +170,8 @@ services:
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-devonly_change_me}
       PGADMIN_DISABLE_POSTFIX: "true"
       PGADMIN_CONFIG_SERVER_MODE: "True"
-      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "True"
-      PGADMIN_LISTEN_PORT: 5050
     ports:
-      - "127.0.0.1:5050:5050"
+      - "127.0.0.1:5050:80"
     volumes:
       - pgadmin-data:/var/lib/pgadmin
     depends_on:
@@ -330,34 +181,14 @@ services:
     logging: *default-logging
     security_opt: ["no-new-privileges:true"]
 
-  clamav:
-    # Optional malware scanning. Memory-hungry (~1.5 GiB), so it is off by
-    # default on the smallest instance; enable with `--profile scan`.
-    image: clamav/clamav:1.4
-    profiles: [scan]
-    restart: unless-stopped
-    volumes:
-      - clamav-data:/var/lib/clamav
-    healthcheck:
-      test: ["CMD", "clamdcheck.sh"]
-      interval: 60s
-      timeout: 10s
-      retries: 3
-      start_period: 120s
-    networks: [backend]
-    logging: *default-logging
-    security_opt: ["no-new-privileges:true"]
-
 networks:
   backend:
     driver: bridge
-    name: techsara-backend
+    internal: true
+  egress:
+    driver: bridge
 
 volumes:
   postgres-data:
-  minio-data:
-  caddy-data:
-  caddy-config:
   pgadmin-data:
-  clamav-data:
   backup-work:

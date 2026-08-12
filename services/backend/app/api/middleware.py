@@ -84,8 +84,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 class BodySizeLimitMiddleware(BaseHTTPMiddleware):
     """Reject oversized bodies before they are parsed.
 
-    Caddy enforces the same ceiling at the edge; this is the in-process
-    backstop for direct connections (for example, from the worker network).
+    Cloudflare supplies the outer edge limits; this is the authoritative
+    application limit at the origin.
     """
 
     async def dispatch(

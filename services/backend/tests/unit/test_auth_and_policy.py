@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from datetime import UTC
+from pathlib import Path
 
 import jwt
 import pytest
@@ -106,7 +107,7 @@ class TestOIDCVerification:
                 "exp": int(time.time()) + 600,
                 "iat": int(time.time()),
             },
-            "not-the-right-key",
+            "not-the-right-key-but-long-enough-for-hs256",
             algorithm="HS256",
         )
         with pytest.raises(AuthenticationError):
@@ -155,7 +156,7 @@ class TestDevAuthGuardrails:
                 oidc_client_id="real",
             )
 
-    def test_production_rejects_minio_endpoint(self) -> None:
+    def test_production_rejects_endpoint_override(self) -> None:
         with pytest.raises(ValueError, match="S3_ENDPOINT_URL"):
             Settings(
                 environment="production",
@@ -165,8 +166,32 @@ class TestDevAuthGuardrails:
                 database_url="postgresql+asyncpg://u:strongpassword@postgres:5432/db",
                 allowed_email_domains="example.com",
                 oidc_client_id="real",
-                s3_endpoint_url="http://minio:9000",
+                s3_endpoint_url="https://object-store.invalid",
             )
+
+    @pytest.mark.parametrize(
+        ("field", "value", "message"),
+        [
+            ("aws_region", "eu-west-1", "AWS_REGION"),
+            ("s3_bucket", "wrong-bucket", "S3_BUCKET"),
+            ("s3_use_path_style", True, "S3_USE_PATH_STYLE"),
+        ],
+    )
+    def test_production_pins_real_s3_configuration(
+        self, field: str, value: object, message: str
+    ) -> None:
+        values: dict[str, object] = {
+            "environment": "production",
+            "dev_auth_enabled": False,
+            "jwt_secret": "x" * 48,
+            "config_signing_key": "y" * 48,
+            "database_url": "postgresql+asyncpg://u:strongpassword@postgres:5432/db",
+            "allowed_email_domains": "example.com",
+            "oidc_client_id": "real",
+        }
+        values[field] = value
+        with pytest.raises(ValueError, match=message):
+            Settings(**values)
 
     def test_production_rejects_content_logging(self) -> None:
         with pytest.raises(ValueError, match="LOG_MESSAGE_CONTENT"):
@@ -180,6 +205,17 @@ class TestDevAuthGuardrails:
                 oidc_client_id="real",
                 log_message_content=True,
             )
+
+    def test_database_password_file_is_url_encoded(self, tmp_path: Path) -> None:
+        password_file = tmp_path / "postgres-password"
+        password_file.write_text("p@ss:/% word\n", encoding="utf-8")
+        settings = Settings(
+            database_url="postgresql+asyncpg://user:REPLACE@postgres:5432/archive",
+            postgres_password_file=str(password_file),
+        )
+        assert settings.database_url == (
+            "postgresql+asyncpg://user:p%40ss%3A%2F%25%20word@postgres:5432/archive"
+        )
 
 
 class TestBackendTokens:

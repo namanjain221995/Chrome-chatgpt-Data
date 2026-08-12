@@ -3,7 +3,7 @@
 # Build the deployment bundle that gets copied to the EC2 instance.
 #
 # The bundle is everything the instance needs to run the stack and nothing else:
-# compose files, the Caddyfile, the systemd units and the operational scripts.
+# production Compose, systemd units and operational scripts.
 # No source code, no secrets, no .env.
 # =============================================================================
 set -euo pipefail
@@ -19,10 +19,13 @@ BUNDLE="${STAGE}/${NAME}"
 
 mkdir -p "${BUNDLE}"/{deploy,scripts}
 
-cp "${ROOT}/compose.yaml" "${ROOT}/compose.prod.yaml" "${BUNDLE}/"
+cp "${ROOT}/compose.prod.yaml" "${BUNDLE}/"
 cp "${ROOT}/.env.example" "${BUNDLE}/"
 cp -r "${ROOT}/deploy/." "${BUNDLE}/deploy/"
 cp "${ROOT}/scripts/deploy_ec2.sh" \
+   "${ROOT}/scripts/fetch_ssm_secrets.sh" \
+   "${ROOT}/scripts/install_origin_tls.sh" \
+   "${ROOT}/scripts/verify_deployment.sh" \
    "${ROOT}/scripts/backup_postgres.sh" \
    "${ROOT}/scripts/backup_loop.sh" \
    "${ROOT}/scripts/restore_postgres.sh" \
@@ -40,8 +43,9 @@ Copy this directory to /opt/techsara-chat-archive on the EC2 instance, then:
     sudo IMAGE_TAG=${VERSION} ./scripts/deploy_ec2.sh
     sudo systemctl enable techsara-chat-archive
 
-Secrets are read from SSM Parameter Store by deploy_ec2.sh; none are in this
-bundle. Run scripts/put_secrets.sh from an administrator workstation first.
+Secrets are fetched from SSM Parameter Store; none are in this bundle. Install
+the Cloudflare Origin CA certificate and key with install_origin_tls.sh before
+deployment. The API terminates origin TLS directly on port 443.
 EOF
 
 mkdir -p "${OUT_DIR}"

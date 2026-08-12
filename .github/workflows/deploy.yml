@@ -46,10 +46,12 @@ jobs:
       - name: Deploy through SSM Run Command
         id: deploy
         run: |
+          command="cd /opt/techsara-chat-archive && sudo IMAGE_TAG=${{ inputs.image_tag }} ./scripts/deploy_ec2.sh"
+          parameters="$(jq -cn --arg command "$command" '{commands:[$command]}')"
           command_id="$(aws ssm send-command \
-            --document-name "techsara-chat-archive-deploy" \
+            --document-name "AWS-RunShellScript" \
             --targets "Key=instanceids,Values=${{ inputs.instance_id }}" \
-            --parameters "imageTag=${{ inputs.image_tag }}" \
+            --parameters "$parameters" \
             --comment "Deploy ${{ inputs.image_tag }} by ${{ github.actor }}" \
             --query 'Command.CommandId' --output text)"
           echo "command_id=${command_id}" >> "$GITHUB_OUTPUT"

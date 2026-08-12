@@ -2,19 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.core.crypto import sha256_hex
 from app.core.errors import PolicyError
 from app.models.conversation import Conversation, Message, MessagePart, MessageVersion
 from app.models.enums import CaptureCompleteness, CompletionStatus, JobKind
 from app.models.events import CaptureEvent, IdempotencyKey
+from app.models.identity import Organization, Workspace
 from app.models.jobs import Job
 from app.schemas.ingest import ConversationUpsertIn, MessageIn
 from app.services import ingest as ingest_service
+from app.services.policy import resolve_workspace
 from tests.conftest import make_client_context, managed_workspace_ref, new_idempotency_key
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -43,6 +48,48 @@ def msg(
     }
     payload.update(overrides)
     return MessageIn(**payload)
+
+
+class TestConcurrentWorkspaceResolution:
+    async def test_first_concurrent_requests_share_one_workspace(self, db_engine) -> None:
+        factory = async_sessionmaker(bind=db_engine, expire_on_commit=False)
+        marker = uuid.uuid4().hex
+        organization = Organization(
+            id=uuid.uuid4(),
+            slug=f"race-{marker[:24]}",
+            display_name="Workspace race test",
+            primary_domain=f"{marker}.example.com",
+            allowed_domains=["example.com"],
+            settings={},
+        )
+        async with factory() as setup:
+            setup.add(organization)
+            await setup.commit()
+
+        async def resolve_once() -> uuid.UUID:
+            async with factory() as session:
+                decision = await resolve_workspace(
+                    session,
+                    organization=organization,
+                    ref=managed_workspace_ref(),
+                )
+                await session.commit()
+                return decision.workspace.id
+
+        first, second = await asyncio.gather(resolve_once(), resolve_once())
+        assert first == second
+
+        async with factory() as verify:
+            count = (
+                await verify.execute(
+                    select(func.count())
+                    .select_from(Workspace)
+                    .where(Workspace.organization_id == organization.id)
+                )
+            ).scalar_one()
+            assert count == 1
+            await verify.execute(delete(Organization).where(Organization.id == organization.id))
+            await verify.commit()
 
 
 class TestConversationUpsert:

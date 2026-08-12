@@ -15,7 +15,7 @@ git tag → CI builds and pushes ghcr.io/<org>/…-backend:<sha>
 
 ## Prerequisites
 
-- `terraform apply` completed ([AWS_STEP_BY_STEP.md](AWS_STEP_BY_STEP.md))
+- Manual AWS checklist completed ([AWS_MANUAL_SETUP.md](AWS_MANUAL_SETUP.md))
 - Secrets written with `scripts/put_secrets.sh`
 - DNS pointing at the Elastic IP
 - The deployment bundle at `/opt/techsara-chat-archive`
@@ -27,9 +27,9 @@ git tag → CI builds and pushes ghcr.io/<org>/…-backend:<sha>
 
 ```bash
 aws ssm send-command \
-  --document-name techsara-chat-archive-deploy \
+  --document-name AWS-RunShellScript \
   --targets Key=instanceids,Values=i-0123456789abcdef0 \
-  --parameters imageTag=a1b2c3d4e5f6 \
+  --parameters 'commands=["cd /opt/techsara-chat-archive && sudo IMAGE_TAG=a1b2c3d4e5f6 ./scripts/deploy_ec2.sh"]' \
   --comment "Release v1.2.0"
 ```
 
@@ -53,7 +53,7 @@ sudo IMAGE_TAG=a1b2c3d4e5f6 ./scripts/deploy_ec2.sh
 
 | Step | Why it is where it is |
 | --- | --- |
-| 1. Render `.env` and 0400 secret files from SSM | Secrets never live in the image, the compose file, or a process listing |
+| 1. Render `.env` and root-owned, service-group-readable secret files from SSM | Secrets never live in the image, the compose file, or a process listing |
 | 2. `docker compose pull` | Fail before touching the running system if the tag is wrong |
 | 3. **Backup** | The only reliable way back from a bad migration |
 | 4. `alembic upgrade head` | Schema first, so the new code never meets an old schema |
@@ -84,7 +84,7 @@ Design migrations to be backwards compatible so a rollback is rarely needed:
 This is a single instance, so a deployment restarts the API and there is a brief
 gap. It is small in practice:
 
-- Caddy keeps listening and returns 502 for a few seconds.
+- Cloudflare stays available but may report a brief origin error.
 - Extensions queue locally and retry; nothing is lost.
 - The worker finishes its current job (60-second grace) before stopping.
 
@@ -97,7 +97,7 @@ balancer, which is step 4 of the growth path in
 ```bash
 curl -s https://archive.example.com/health/ready | jq
 curl -s https://archive.example.com/api/v1/config | jq '.config.config_version'
-sudo docker compose -f compose.yaml -f compose.prod.yaml ps
+sudo docker compose -f compose.prod.yaml ps
 curl -s -H "Authorization: Bearer $TOKEN" \
   https://archive.example.com/api/v1/admin/health-summary | jq '.warnings, .git_sha'
 ```
@@ -113,8 +113,11 @@ re-read it:
 ```bash
 aws ssm put-parameter --name /techsara-chat-archive/kill_switch_enabled \
   --value true --type String --overwrite --region us-east-1
-aws ssm send-command --document-name techsara-chat-archive-deploy \
-  --targets Key=instanceids,Values=<id> --parameters imageTag=<current-sha>
+aws ssm send-command \
+  --document-name AWS-RunShellScript \
+  --targets Key=instanceids,Values=<id> \
+  --parameters 'commands=["cd /opt/techsara-chat-archive && sudo IMAGE_TAG=<current-sha> ./scripts/deploy_ec2.sh"]' \
+  --region us-east-1
 ```
 
 ### Emergency stop
@@ -125,7 +128,7 @@ To halt capture immediately without a deployment:
 aws ssm start-session --target <id>
 cd /opt/techsara-chat-archive
 sudo sed -i 's/^KILL_SWITCH_ENABLED=.*/KILL_SWITCH_ENABLED=true/' .env
-sudo docker compose -f compose.yaml -f compose.prod.yaml up -d api
+sudo docker compose -f compose.prod.yaml up -d api
 ```
 
 Every ingest request is then refused server-side, regardless of what any client
@@ -135,8 +138,11 @@ has cached.
 
 ```bash
 ./scripts/put_secrets.sh --project techsara-chat-archive --region us-east-1
-aws ssm send-command --document-name techsara-chat-archive-deploy \
-  --targets Key=instanceids,Values=<id> --parameters imageTag=<current-sha>
+aws ssm send-command \
+  --document-name AWS-RunShellScript \
+  --targets Key=instanceids,Values=<id> \
+  --parameters 'commands=["cd /opt/techsara-chat-archive && sudo IMAGE_TAG=<current-sha> ./scripts/deploy_ec2.sh"]' \
+  --region us-east-1
 ```
 
 Rotating `JWT_SECRET` invalidates every access token, so employees sign in again.

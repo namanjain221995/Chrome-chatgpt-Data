@@ -12,6 +12,11 @@
 # =============================================================================
 set -eu
 
+if [ -n "${PGPASS_SOURCE_FILE:-}" ] && [ -r "${PGPASS_SOURCE_FILE}" ]; then
+  cp "${PGPASS_SOURCE_FILE}" "${PGPASSFILE:-/tmp/.pgpass}"
+  chmod 0600 "${PGPASSFILE:-/tmp/.pgpass}"
+fi
+
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/techsara}"
 S3_BUCKET="${S3_BUCKET:?S3_BUCKET is required}"
 AWS_REGION="${AWS_REGION:-us-east-1}"

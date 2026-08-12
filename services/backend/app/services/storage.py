@@ -11,7 +11,6 @@ Design rules enforced here:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import gzip
 import io
 import json
@@ -164,26 +163,20 @@ class StorageService:
     def bucket(self) -> str:
         return self._settings.s3_bucket
 
-    @property
-    def uses_custom_endpoint(self) -> bool:
-        return bool(self._settings.s3_endpoint_url)
-
     def _build_client(self) -> Any:
         s = self._settings
         config = BotoConfig(
             region_name=s.aws_region,
             signature_version="s3v4",
-            s3={"addressing_style": "path" if s.s3_use_path_style else "auto"},
+            s3={"addressing_style": "virtual"},
             retries={"max_attempts": 5, "mode": "standard"},
             connect_timeout=10,
             read_timeout=60,
         )
-        kwargs: dict[str, Any] = {"config": config}
-        if s.s3_endpoint_url:
-            kwargs["endpoint_url"] = s.s3_endpoint_url
         # Credentials come from the EC2 instance profile in production; boto3
-        # resolves them automatically. Static keys exist only for local MinIO.
-        return boto3.client("s3", **kwargs)
+        # resolves and refreshes them automatically. No static key is accepted
+        # by application configuration.
+        return boto3.client("s3", config=config)
 
     @property
     def client(self) -> Any:
@@ -192,18 +185,8 @@ class StorageService:
         return self._client
 
     def _encryption_args(self) -> dict[str, str]:
-        """Server-side encryption arguments for a write.
-
-        Against real S3 these are always sent: SSE-S3 by default, SSE-KMS when
-        configured, and the bucket policy additionally *denies* an unencrypted
-        upload. Against a local S3-compatible endpoint they are omitted: MinIO
-        rejects `x-amz-server-side-encryption` with `NotImplemented` unless it
-        has a KMS backend, which would make every development and CI write fail
-        and leave the archive path untested exactly where it matters most.
-        """
+        """Return the mandatory encryption parameters for every S3 write."""
         s = self._settings
-        if self.uses_custom_endpoint:
-            return {}
         if s.s3_encryption_mode == "SSE-KMS" and s.s3_kms_key_id:
             return {"ServerSideEncryption": "aws:kms", "SSEKMSKeyId": s.s3_kms_key_id}
         return {"ServerSideEncryption": "AES256"}
@@ -244,8 +227,7 @@ class StorageService:
             "Metadata": {"sha256": digest, **(metadata or {})},
             **self._encryption_args(),
         }
-        if not self.uses_custom_endpoint:
-            args["ChecksumSHA256"] = hex_to_b64(digest)
+        args["ChecksumSHA256"] = hex_to_b64(digest)
         try:
             response = await asyncio.to_thread(lambda: self.client.put_object(**args))
         except (ClientError, BotoCoreError) as exc:
@@ -363,10 +345,9 @@ class StorageService:
         elif enc.get("ServerSideEncryption"):
             headers["x-amz-server-side-encryption"] = enc["ServerSideEncryption"]
 
-        # Real S3 verifies the checksum during upload; MinIO support varies, so
-        # the header is only pinned when talking to AWS. The worker re-verifies
-        # the digest after download in every environment.
-        if sha256_hex_digest and not self.uses_custom_endpoint:
+        # S3 verifies the checksum during upload and the worker verifies it
+        # again before an attachment leaves quarantine.
+        if sha256_hex_digest:
             params["ChecksumSHA256"] = hex_to_b64(sha256_hex_digest)
             headers["x-amz-checksum-sha256"] = hex_to_b64(sha256_hex_digest)
 
@@ -397,23 +378,6 @@ class StorageService:
         except Exception as exc:
             logger.warning("s3_check_failed", error_type=type(exc).__name__)
             return False
-
-    async def ensure_bucket(self) -> None:
-        """Development helper: create the bucket when running against MinIO."""
-        if not self.uses_custom_endpoint:
-            return
-
-        def _ensure() -> None:
-            try:
-                self.client.head_bucket(Bucket=self.bucket)
-            except ClientError:
-                self.client.create_bucket(Bucket=self.bucket)
-                with contextlib.suppress(ClientError):  # pragma: no cover
-                    self.client.put_bucket_versioning(
-                        Bucket=self.bucket, VersioningConfiguration={"Status": "Enabled"}
-                    )
-
-        await asyncio.to_thread(_ensure)
 
 
 _storage: StorageService | None = None

@@ -70,9 +70,9 @@ reasonable choice. Anything here can be changed by configuration unless noted.
 | --- | --- | --- |
 | A32 | Default VPC and its first subnet unless overridden | Lets a first deployment succeed without networking work. |
 | A33 | `t3a.large` x86_64 default | 2 vCPU / 8 GiB as specified; ARM64 `t4g.large` is supported and all images are multi-arch. |
-| A34 | Terraform manages only non-secret SSM parameters | Terraform state stores values in plaintext; secrets are written by `scripts/put_secrets.sh`. |
-| A35 | EBS snapshots are documented, not Terraform-managed | AWS Backup / DLM policy is usually an account-level concern owned by a different team. |
-| A36 | Route 53 record only when a zone id is supplied | The brief restricts Route 53 to an existing hosted zone. |
+| A34 | SSM parameters are created manually | Console/CLI creation keeps infrastructure choices explicit and secrets out of repository state. |
+| A35 | EBS snapshots are configured manually | AWS Backup / DLM policy is usually an account-level concern owned by a different team. |
+| A36 | Cloudflare proxied DNS points the archive hostname to the Elastic IP | Full (strict), edge HTTPS redirects, and the trusted client-address header require proxy mode rather than DNS-only mode. |
 
 ## Compliance adapter
 

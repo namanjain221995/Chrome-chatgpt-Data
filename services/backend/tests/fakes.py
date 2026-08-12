@@ -1,9 +1,8 @@
 """In-memory doubles used by tests.
 
 ``FakeStorageService`` implements exactly the surface :class:`StorageService`
-exposes, so tests exercise the real call sites without needing S3 or MinIO.
-The MinIO-backed path is covered separately by tests/integration and by the
-docker-compose integration test.
+exposes, so tests exercise real call sites without network access. The AWS SDK
+wire contract is covered separately with botocore Stubber.
 """
 
 from __future__ import annotations
@@ -37,11 +36,6 @@ class FakeStorageService:
     reachable: bool = True
     fail_next_put: bool = False
     _version_counter: int = 0
-
-    # -- properties mirroring StorageService --------------------------------
-    @property
-    def uses_custom_endpoint(self) -> bool:
-        return True
 
     def _next_version(self) -> str:
         self._version_counter += 1
@@ -161,9 +155,6 @@ class FakeStorageService:
     # -- health -------------------------------------------------------------
     async def check(self) -> bool:
         return self.reachable
-
-    async def ensure_bucket(self) -> None:
-        return None
 
     # -- test helpers -------------------------------------------------------
     def simulate_upload(self, key: str, body: bytes, content_type: str = "image/png") -> None:

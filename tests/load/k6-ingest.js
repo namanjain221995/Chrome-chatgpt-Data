@@ -12,7 +12,7 @@
  * ChatGPT account:
  *
  *   k6 run -e BASE_URL=https://archive-load.example.com \
- *          -e TOKEN_FILE=./tokens.json tests/load/k6-ingest.js
+ *          -e ACCESS_TOKEN=... tests/load/k6-ingest.js
  *
  * Thresholds are treated as pass/fail gates, so a regression fails CI rather
  * than producing a graph nobody reads.
@@ -21,12 +21,13 @@
 import http from 'k6/http';
 import { check, sleep, fail } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
-import { randomIntBetween } from 'https://jslib.k6.io/k6-utils/1.4.0/index.js';
 import crypto from 'k6/crypto';
 
-const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
+const BASE_URL = __ENV.BASE_URL || 'http://127.0.0.1:8000';
 const MESSAGES_PER_BATCH = Number(__ENV.MESSAGES_PER_BATCH || 25);
 const WORKSPACE_LABEL = __ENV.WORKSPACE_LABEL || "TechSara's Workspace";
+const SMOKE = __ENV.LOAD_PROFILE === 'smoke';
+const SUSTAINED_DURATION = SMOKE ? '12s' : __ENV.SUSTAINED_DURATION || '5m';
 
 // --- custom metrics --------------------------------------------------------
 const acceptedMessages = new Counter('archive_messages_accepted');
@@ -36,51 +37,61 @@ const backpressureRate = new Rate('archive_backpressure');
 const queueDepth = new Trend('archive_queue_depth');
 const batchDuration = new Trend('archive_batch_duration_ms');
 
+function randomIntBetween(minimum, maximum) {
+  return Math.floor(Math.random() * (maximum - minimum + 1)) + minimum;
+}
+
 export const options = {
   scenarios: {
     // 50 concurrent sync clients at a sustained 10 req/s.
     sustained_sync: {
       executor: 'constant-arrival-rate',
-      rate: Number(__ENV.SUSTAINED_RPS || 10),
+      rate: Number(__ENV.SUSTAINED_RPS || (SMOKE ? 2 : 10)),
       timeUnit: '1s',
-      duration: __ENV.SUSTAINED_DURATION || '5m',
-      preAllocatedVUs: 50,
-      maxVUs: 100,
+      duration: SUSTAINED_DURATION,
+      preAllocatedVUs: SMOKE ? 5 : 50,
+      maxVUs: SMOKE ? 10 : 100,
       exec: 'ingestMessages',
       tags: { scenario: 'sustained' },
     },
     // Short 25 req/s bursts, the "everyone returns from a meeting" shape.
     burst_sync: {
       executor: 'ramping-arrival-rate',
-      startRate: 5,
+      startRate: SMOKE ? 1 : 5,
       timeUnit: '1s',
-      preAllocatedVUs: 60,
-      maxVUs: 150,
-      startTime: '1m',
-      stages: [
-        { target: 25, duration: '30s' },
-        { target: 25, duration: '1m' },
-        { target: 5, duration: '30s' },
-      ],
+      preAllocatedVUs: SMOKE ? 5 : 60,
+      maxVUs: SMOKE ? 10 : 150,
+      startTime: SMOKE ? '2s' : '1m',
+      stages: SMOKE
+        ? [
+            { target: 3, duration: '3s' },
+            { target: 5, duration: '4s' },
+            { target: 1, duration: '3s' },
+          ]
+        : [
+            { target: 25, duration: '30s' },
+            { target: 25, duration: '1m' },
+            { target: 5, duration: '30s' },
+          ],
       exec: 'ingestMessages',
       tags: { scenario: 'burst' },
     },
     // Attachment metadata calls interleaved with message ingestion.
     attachments: {
       executor: 'constant-arrival-rate',
-      rate: 2,
+      rate: SMOKE ? 1 : 2,
       timeUnit: '1s',
-      duration: __ENV.SUSTAINED_DURATION || '5m',
-      preAllocatedVUs: 10,
-      maxVUs: 25,
+      duration: SUSTAINED_DURATION,
+      preAllocatedVUs: SMOKE ? 2 : 10,
+      maxVUs: SMOKE ? 5 : 25,
       exec: 'initAttachment',
       tags: { scenario: 'attachments' },
     },
     // Popup polling: cheap, frequent, must stay fast under load.
     status_polling: {
       executor: 'constant-vus',
-      vus: 10,
-      duration: __ENV.SUSTAINED_DURATION || '5m',
+      vus: SMOKE ? 2 : 10,
+      duration: SUSTAINED_DURATION,
       exec: 'pollStatus',
       tags: { scenario: 'status' },
     },
@@ -192,6 +203,10 @@ export function ingestMessages() {
     'response is json': (r) => (r.headers['Content-Type'] || '').includes('application/json'),
   });
 
+  if (!ok) {
+    console.error(`message batch failed: status=${response.status} body=${response.body}`);
+  }
+
   if (ok && response.status === 200) {
     const body = response.json();
     acceptedMessages.add(body.accepted || 0);
@@ -220,7 +235,7 @@ export function initAttachment() {
     byte_size: randomIntBetween(1024, 1024 * 512),
     sha256: sha256(content),
     relation: 'uploaded_by_user',
-    metadata_only: false,
+    metadata_only: __ENV.ATTACHMENT_METADATA_ONLY === 'true',
     client: clientContext(),
   };
 
@@ -229,11 +244,15 @@ export function initAttachment() {
     tags: { endpoint: 'attachments_init' },
   });
 
-  check(response, {
+  const ok = check(response, {
     'attachment init accepted': (r) => r.status === 200 || r.status === 403,
     'presign returned or policy blocked': (r) =>
       r.status !== 200 || r.json('upload_url') !== undefined,
   });
+
+  if (!ok) {
+    console.error(`attachment init failed: status=${response.status} body=${response.body}`);
+  }
 
   sleep(randomIntBetween(2, 6));
 }
@@ -244,11 +263,15 @@ export function pollStatus() {
     tags: { endpoint: 'sync_status' },
   });
 
-  check(response, {
+  const ok = check(response, {
     'status ok': (r) => r.status === 200,
     'coverage statement present': (r) =>
       r.status !== 200 || String(r.json('coverage_statement') || '').length > 0,
   });
+
+  if (!ok) {
+    console.error(`status poll failed: status=${response.status} body=${response.body}`);
+  }
 
   sleep(randomIntBetween(5, 15));
 }
@@ -264,7 +287,8 @@ export function setup() {
 
 export function handleSummary(data) {
   const metric = (name, stat) => {
-    const value = data.metrics[name]?.values?.[stat];
+    const key = stat === 'p(50)' ? 'med' : stat;
+    const value = data.metrics[name]?.values?.[key];
     return value === undefined ? 'n/a' : Math.round(value * 100) / 100;
   };
 

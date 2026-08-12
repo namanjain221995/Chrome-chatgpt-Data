@@ -12,6 +12,7 @@ import functools
 import os
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import quote, urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -51,6 +52,7 @@ class Settings(BaseSettings):
     app_name: str = "techsara-chat-archive"
     app_version: str = "1.0.0"
     public_base_url: str = "https://archive.example.com"
+    archive_hostname: str = "archive.example.com"
     api_base_path: str = "/api/v1"
     git_sha: str = "unknown"
 
@@ -65,7 +67,7 @@ class Settings(BaseSettings):
 
     # ---- AWS / S3 ---------------------------------------------------------
     aws_region: str = "us-east-1"
-    s3_bucket: str = "replace-account-region-techsara-chat-archive"
+    s3_bucket: str = "techsara-chatgpt"
     s3_endpoint_url: str | None = None
     s3_use_path_style: bool = False
     s3_encryption_mode: Literal["SSE-S3", "SSE-KMS"] = "SSE-S3"
@@ -167,7 +169,9 @@ class Settings(BaseSettings):
         pg_from_file = _read_secret_file(self.postgres_password_file)
         if pg_from_file and "REPLACE" in self.database_url:
             object.__setattr__(
-                self, "database_url", self.database_url.replace("REPLACE", pg_from_file)
+                self,
+                "database_url",
+                self.database_url.replace("REPLACE", quote(pg_from_file, safe="")),
             )
         return self
 
@@ -186,10 +190,18 @@ class Settings(BaseSettings):
             problems.append("CONFIG_SIGNING_KEY must be a strong non-default secret in production")
         if "devonly" in self.database_url or "REPLACE" in self.database_url:
             problems.append("DATABASE_URL still contains a placeholder password")
+        if self.aws_region != "us-east-1":
+            problems.append("AWS_REGION must be us-east-1 in production")
+        if self.s3_bucket != "techsara-chatgpt":
+            problems.append("S3_BUCKET must be techsara-chatgpt in production")
         if self.s3_endpoint_url:
-            problems.append("S3_ENDPOINT_URL must be empty in production (MinIO is dev-only)")
+            problems.append("S3_ENDPOINT_URL must be empty in production")
+        if self.s3_use_path_style:
+            problems.append("S3_USE_PATH_STYLE must be false in production")
         if not self.public_base_url.startswith("https://"):
             problems.append("PUBLIC_BASE_URL must be https in production")
+        if self.public_hostname != self.archive_hostname:
+            problems.append("ARCHIVE_HOSTNAME must match PUBLIC_BASE_URL")
         if self.log_message_content:
             problems.append("LOG_MESSAGE_CONTENT must be false in production")
         if not self.allowed_domains:
@@ -232,6 +244,10 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
+
+    @property
+    def public_hostname(self) -> str | None:
+        return urlsplit(self.public_base_url).hostname
 
     @property
     def dev_auth_allowed(self) -> bool:

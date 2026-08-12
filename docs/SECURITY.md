@@ -11,7 +11,7 @@ The adversaries this design takes seriously:
 | A curious employee | Reading colleagues' conversations | RBAC; no public search; every admin read audited |
 | A compromised employee laptop | Exfiltrating archived content | Tokens are short-lived and device-bound; the queue is bounded; revoking a device is instant |
 | An attacker on the network | Reading traffic | TLS everywhere outside the private Docker network; HSTS; S3 denies non-TLS |
-| An attacker who reaches the instance | Reading the database | PostgreSQL is not publicly exposed; secrets are 0400 root-owned files; EBS is encrypted |
+| An attacker who reaches the instance | Reading the database | PostgreSQL is not publicly exposed; secrets are root-owned and readable only by each service group; EBS is encrypted |
 | An insider with AWS access | Silent deletion | S3 versioning; the instance role has **no** `s3:DeleteObject`; audited deletion path only |
 | An SSRF in the application | Stealing instance credentials | IMDSv2 required, hop limit 1 |
 | A malicious upload | Malware, or a file lying about its type | Quarantine → verify checksum, size and magic bytes → clean; optional ClamAV profile |
@@ -41,10 +41,11 @@ fails the build if one appears. ESLint bans `document.cookie`, `localStorage`
 and `sessionStorage` in extension source.
 
 ### 7. TLS everywhere
-Caddy terminates TLS with automatic certificates and sets HSTS
-(`max-age=63072000; includeSubDomains; preload`). The S3 bucket policy denies
-any request with `aws:SecureTransport = false`. The extension refuses a non-HTTPS
-backend URL from managed policy.
+FastAPI terminates origin TLS directly with a read-only Cloudflare Origin CA
+certificate and sets HSTS. Cloudflare validates the origin in Full (strict)
+mode. The EC2 security group accepts port 443 only from Cloudflare ranges. The
+S3 bucket policy denies any request with `aws:SecureTransport = false`. The
+extension refuses a non-HTTPS backend URL from managed policy.
 
 ### 8. PostgreSQL and pgAdmin never publicly exposed
 Neither publishes a host port in `compose.yaml`. pgAdmin lives behind the `admin`
@@ -53,8 +54,7 @@ published port. Access is via SSM port forwarding — see
 [PGADMIN_ACCESS.md](PGADMIN_ACCESS.md).
 
 ### 9. SSM Session Manager, no public SSH
-`admin_ingress_cidrs` defaults to empty, so **no SSH rule is created at all**.
-Terraform validation refuses `0.0.0.0/0` outright.
+The security group has no SSH rule. Administration uses an audited SSM session.
 
 ### 10–11. S3 block public access and encryption
 Block-all-public-access, `BucketOwnerEnforced` ownership (ACLs disabled),
@@ -82,7 +82,8 @@ input.
 Per-user, per-device and per-IP sliding windows, plus a 1-second burst window.
 Because the API runs `API_WORKERS` Gunicorn workers, the per-key budget is
 divided by the worker count so the fleet-wide limit matches the configured
-value. Body size is capped at Caddy **and** in middleware.
+value. Cloudflare supplies coarse edge controls; middleware enforces the
+authoritative origin body-size limit.
 
 ### 18. Auditing
 Every admin read, export, approval, deletion, device revocation and
@@ -155,7 +156,8 @@ unconditionally when `ENVIRONMENT=production` — even if `DEV_AUTH_ENABLED=true
 
 `Settings` refuses to start in production when: dev auth is enabled, a default
 or short secret is in use, the database URL still holds a placeholder, an S3
-endpoint override is set (MinIO), the public URL is not HTTPS, message-content
+endpoint override is set, the bucket/region is wrong, path-style addressing is
+enabled, the public URL is not HTTPS, message-content
 logging is on, no allowed domains are configured, or the OIDC client id is
 unset. Failing to boot is the correct behaviour; running insecurely is not.
 

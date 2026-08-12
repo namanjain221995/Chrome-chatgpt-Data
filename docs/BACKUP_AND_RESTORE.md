@@ -29,8 +29,8 @@ The `backup` service runs `scripts/backup_postgres.sh` every
 5. Prune local copies older than two days (S3 is the durable store)
 
 ```
-s3://<bucket>/backups/postgres/YYYY/MM/DD/techsara-<timestamp>.dump.gz
-s3://<bucket>/backups/manifests/YYYY/MM/DD/techsara-<timestamp>.sha256
+s3://techsara-chatgpt/backups/postgres/YYYY/MM/DD/techsara-<timestamp>.dump.gz
+s3://techsara-chatgpt/backups/manifests/YYYY/MM/DD/techsara-<timestamp>.sha256
 ```
 
 Retention is enforced by the bucket lifecycle rule
@@ -42,7 +42,7 @@ days.
 ```bash
 aws ssm start-session --target <instance-id>
 cd /opt/techsara-chat-archive
-sudo docker compose -f compose.yaml -f compose.prod.yaml exec backup \
+sudo docker compose -f compose.prod.yaml exec backup \
   sh /opt/scripts/verify_backup.sh
 ```
 
@@ -53,7 +53,7 @@ chain is healthy today.
 ## Proving a restore (do this monthly)
 
 ```bash
-sudo docker compose -f compose.yaml -f compose.prod.yaml exec backup \
+sudo docker compose -f compose.prod.yaml exec backup \
   sh /opt/scripts/verify_backup.sh --full-restore
 ```
 
@@ -72,9 +72,9 @@ make restore-test
 ### A single table or a specific point
 
 ```bash
-aws s3 ls s3://<bucket>/backups/postgres/ --recursive | tail -20
+aws s3 ls s3://techsara-chatgpt/backups/postgres/ --recursive --region us-east-1 | tail -20
 
-sudo docker compose -f compose.yaml -f compose.prod.yaml exec backup \
+sudo docker compose -f compose.prod.yaml exec backup \
   sh /opt/scripts/restore_postgres.sh \
     --from-s3 backups/postgres/2026/03/15/techsara-20260315T031500Z.dump.gz \
     --target-db techsara_recovered
@@ -85,12 +85,12 @@ it, verify, then switch over deliberately.
 
 ### Full recovery onto a replacement instance
 
-1. Provision the replacement (`terraform apply`) and attach the existing data
+1. Provision the replacement from the manual AWS checklist and attach the existing data
    volume if it survived; otherwise start from an empty one.
 2. Deploy the application: `sudo IMAGE_TAG=<sha> ./scripts/deploy_ec2.sh`.
 3. Stop the writers so nothing races the restore:
    ```bash
-   sudo docker compose -f compose.yaml -f compose.prod.yaml stop api worker compliance-poller
+   sudo docker compose -f compose.prod.yaml stop api worker compliance-poller
    ```
 4. Restore into a new database, verify, then promote:
    ```bash

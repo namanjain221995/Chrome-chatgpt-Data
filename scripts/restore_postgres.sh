@@ -11,6 +11,11 @@
 # =============================================================================
 set -eu
 
+if [ -n "${PGPASS_SOURCE_FILE:-}" ] && [ -r "${PGPASS_SOURCE_FILE}" ]; then
+  cp "${PGPASS_SOURCE_FILE}" "${PGPASSFILE:-/tmp/.pgpass}"
+  chmod 0600 "${PGPASSFILE:-/tmp/.pgpass}"
+fi
+
 usage() {
   cat >&2 <<'EOF'
 Usage:

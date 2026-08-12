@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-12
 **Scope:** the whole system — Chrome extension, backend API, worker, compliance
-poller, database schema, Docker Compose, Terraform, deployment and operational
+poller, database schema, Docker Compose, manual AWS deployment and operational
 scripts.
 **Method:** threat-model-driven code review plus targeted probes against the
 running code. Every finding below was reproduced before it was fixed, and every
@@ -172,7 +172,8 @@ Redis and ElastiCache are prohibited, so limiting is in-process with the per-key
 budget divided by `API_WORKERS`. A client whose requests happen to land on one
 worker sees `limit / workers` rather than the full limit.
 
-**Accepted and documented.** Caddy applies a coarse edge limit as a second layer.
+**Accepted and documented.** Cloudflare supplies coarse edge controls as a
+second layer.
 If exactness ever matters more than the prohibition, a PostgreSQL-backed limiter
 is possible at the cost of a write on every request.
 
@@ -212,8 +213,9 @@ quarantine → clean; a `.png` that is actually a shell script is rejected
 (`test_content_type_lying_is_detected`). An employee cannot complete another
 employee's attachment (`test_another_employee_cannot_complete_someone_elses_attachment`).
 
-**Secrets.** Never in images, compose files, environment variables or Terraform
-state. Rendered at deploy time from SSM into 0400 root-owned files. The scanner
+**Secrets.** Never in images, compose files, environment variables or repository
+state. Rendered at deploy time from SSM into root-owned `0440` files readable
+only by the numeric group of the service that consumes each secret. The scanner
 runs locally and in CI.
 
 **Log redaction.** Credential-shaped keys are removed, content keys are

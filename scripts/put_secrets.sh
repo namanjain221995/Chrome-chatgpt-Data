@@ -2,9 +2,9 @@
 # =============================================================================
 # Write secrets into SSM Parameter Store as SecureString.
 #
-# Run this once after `terraform apply`, from an administrator workstation.
-# Terraform deliberately does not manage these values: anything Terraform holds
-# is written to state in plaintext.
+# Run this from an administrator workstation after the manual IAM/SSM setup.
+# Values are written directly as SecureString parameters and never enter an
+# infrastructure state file.
 #
 #   scripts/put_secrets.sh --project techsara-chat-archive --region us-east-1
 #
@@ -85,4 +85,5 @@ echo "Done. Verify with:"
 echo "  aws ssm get-parameters-by-path --path /${PROJECT} --region ${REGION} --query 'Parameters[].Name'"
 echo
 echo "Rotation: re-run this script, then redeploy so the containers pick up new files:"
-echo "  aws ssm send-command --document-name ${PROJECT}-deploy --targets Key=instanceids,Values=<id>"
+echo "  aws ssm send-command --document-name AWS-RunShellScript --targets Key=instanceids,Values=<id> \\"
+echo "    --parameters 'commands=[\"cd /opt/${PROJECT} && sudo IMAGE_TAG=<current-sha> ./scripts/deploy_ec2.sh\"]' --region ${REGION}"

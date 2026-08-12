@@ -9,7 +9,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "${ROOT}"
+cd "${ROOT}" || exit 1
 
 RED=$'\033[31m'; GREEN=$'\033[32m'; RESET=$'\033[0m'
 [ -t 1 ] || { RED=""; GREEN=""; RESET=""; }
@@ -19,13 +19,13 @@ findings=0
 EXCLUDES=(
   --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.venv
   --exclude-dir=dist --exclude-dir=artifacts --exclude-dir=__pycache__
-  --exclude-dir=.terraform --exclude-dir=.ruff_cache --exclude-dir=.pytest_cache
+  --exclude-dir=.ruff_cache --exclude-dir=.pytest_cache
   --exclude-dir=.mypy_cache --exclude-dir=coverage
   --exclude=package-lock.json --exclude=secret_scan.sh
 )
 
 # Documented, intentionally non-secret placeholders.
-ALLOWLIST='devonly_|REPLACE|replace-me|changeme|example\.com|smoke-test|not-for-production|test-client|placeholder|your-|<.*>|xxxx|aaaa|minioadmin|strongpassword'
+ALLOWLIST='devonly_|REPLACE|replace-me|changeme|example\.com|smoke-test|not-for-production|test-client|placeholder|your-|<.*>|xxxx|aaaa|strongpassword'
 
 # Test suites deliberately contain secret-*shaped* fixtures (a sample JWT, a
 # throwaway database URL). Shape heuristics skip them; the patterns that match
@@ -82,7 +82,7 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
   tracked_secrets="$(git ls-files | grep -E '\.(pem|key|p12|pfx|jks)$|(^|/)(id_rsa|id_ed25519)$|\.tfvars$' | grep -v example || true)"
   if [ -n "${tracked_secrets}" ]; then
     echo "${RED}FINDING${RESET} secret-shaped files are tracked:"
-    echo "${tracked_secrets}" | sed 's/^/        /'
+    printf '        %s\n' "${tracked_secrets//$'\n'/$'\n        '}"
     findings=$((findings + 1))
   else
     echo "${GREEN}ok     ${RESET} no secret-shaped files tracked"

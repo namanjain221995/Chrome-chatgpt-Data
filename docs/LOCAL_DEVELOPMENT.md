@@ -1,140 +1,108 @@
 # Local development
 
-## Prerequisites
+Local work needs Python 3.12, Node 20, Docker Engine with Compose v2, Git, and
+OpenSSL. PostgreSQL runs in Docker. Storage unit tests use an in-memory double
+and botocore Stubber, so no AWS credential or object-storage server is required.
 
-| Tool | Version | Why |
-| --- | --- | --- |
-| Python | 3.12+ | Backend |
-| Node.js | 18.18+ (20 recommended) | Extension |
-| Docker + Compose v2 | recent | PostgreSQL, MinIO, the full stack |
-| Terraform | 1.6+ | Infrastructure checks only |
-| k6 | optional | Load tests |
-
-## First run
+## Setup
 
 ```bash
-make setup          # backend virtualenv + npm install
+make setup
 cp .env.example .env
-make compose-up     # postgres, minio, api, worker, caddy
+make lint
+make typecheck
+make test
 ```
 
-The API is then on `http://localhost:8080` (through Caddy) and MinIO's console
-on `http://localhost:9001` (`minioadmin` / `minioadmin`).
+The example environment is fail-closed. Browser capture, written authorization,
+and training export are false. Do not enable them merely to develop unrelated
+features.
+
+## PostgreSQL integration tests
 
 ```bash
-curl -s http://localhost:8080/health/ready | jq
-curl -s http://localhost:8080/api/v1/config | jq '.config.policy'
+make test-integration
+make migration-check
+make restore-test
+make test-db-down
 ```
 
-## Turning capture on locally
+The scratch PostgreSQL port binds to `127.0.0.1:55433`. Tests run migrations on
+an empty database, use transaction rollback, exercise concurrent job claiming,
+and prove a logical backup restores.
 
-Both gates are false by default, exactly as in production. For local work:
+## Local Compose stack
 
 ```bash
-# .env
-BROWSER_CONTENT_CAPTURE_ENABLED=true
-OPENAI_WRITTEN_AUTHORIZATION_CONFIRMED=true
-MANAGED_WORKSPACE_LABEL=TechSara's Workspace
-ALLOWED_EMAIL_DOMAINS=example.com
-DEV_AUTH_ENABLED=true
+make compose-up
+curl -fsS http://127.0.0.1:8000/health/live | jq .
+curl -fsS http://127.0.0.1:8000/health/ready | jq .
+make compose-logs
+make compose-down
 ```
 
-`DEV_AUTH_ENABLED` starts the local identity provider, which mints RS256 ID
-tokens with an in-memory key so the *real* verification path runs. It is
-hard-blocked when `ENVIRONMENT=production` — the code raises unconditionally,
-regardless of the flag.
+FastAPI binds only loopback. PostgreSQL has no published port. The worker can
+run safely while capture gates are false; jobs that require AWS should be tested
+with the unit double or in the explicitly authorized real-prefix workflow.
 
-## Running the pieces separately
+Optional pgAdmin:
 
 ```bash
-# Backend, against the scratch database
-make test-db-up
-make migrate
-cd services/backend
-ENVIRONMENT=test DATABASE_URL=postgresql+asyncpg://techsara_app:devonly_change_me@127.0.0.1:55433/techsara_chat_archive \
-  .venv/bin/uvicorn app.main:app --reload
-
-# Worker
-.venv/bin/python -m app.workers.worker
-
-# Extension, rebuilding on change
-cd apps/chrome-extension && npm run dev
+docker compose --profile admin up -d pgadmin
 ```
 
-## Loading the extension in Chrome
+It binds `127.0.0.1:5050:80`. It is a database administration UI, not the
+database, and should not be part of routine development.
 
-1. `make build-extension`
-2. `chrome://extensions` → enable **Developer mode** → **Load unpacked**
-3. Select `apps/chrome-extension/dist`
-4. Copy the extension id and set it in `.env` as `EXTENSION_IDS`, then restart
-   the API so CORS allows the extension origin.
-
-For a local backend, set managed policy so the extension knows where to look.
-Create `/etc/opt/chrome/policies/managed/techsara.json` (Linux):
-
-```json
-{
-  "3rdparty": {
-    "extensions": {
-      "<your-extension-id>": {
-        "apiBaseUrl": "http://localhost:8080",
-        "oidcClientId": "your-dev-oauth-client-id",
-        "allowedEmailDomains": ["example.com"],
-        "managedWorkspaceLabel": "TechSara's Workspace"
-      }
-    }
-  }
-}
-```
-
-`http://localhost` is the one non-HTTPS backend the extension accepts, for
-development only.
-
-## Tests
+## Extension
 
 ```bash
-make test                # unit tests, no external services
-make test-integration    # starts PostgreSQL, migrates, runs integration tests
-make test-compose        # full docker compose smoke test, then destroys the stack
-make verify              # everything CI runs
+cd apps/chrome-extension
+npm run test
+npm run build
+npm run validate:manifest
+npm run package
 ```
 
-Watch mode while working:
+Tests use sanitized DOM fixtures and never drive a live ChatGPT account. The
+content script and service worker are built separately; manifest validation
+fails if runtime imports survive in the classic content script.
+
+## Shared schemas
+
+Pydantic models are the source of truth. After a wire-model change:
 
 ```bash
-cd apps/chrome-extension && npm run test:watch
-cd services/backend && .venv/bin/pytest -q -m "not integration" -x --ff
+make schemas
+make schema-check
 ```
 
-## Working on the DOM adapter
+Commit the generated JSON Schemas with the model change.
 
-Every ChatGPT selector lives in `apps/chrome-extension/src/modules/dom-adapter.ts`.
-When the product's markup changes:
+## Production TLS checks
 
-1. Capture a **sanitized** structural fixture — no real employee content — and
-   add it to `tests/fixtures/transcripts.ts`.
-2. Add a failing test in `tests/dom-adapter.test.ts`.
-3. Adjust the selectors, keeping the most specific first.
-4. Bump `ADAPTER_VERSION`, so archived messages record which build parsed them.
+`make test-production-compose` generates a disposable certificate and starts
+the production-shaped API over HTTPS on a high local port. The certificate is
+never reused, and local development remains plain HTTP on loopback.
 
-Never point tests at a live ChatGPT account.
+## Real S3 test
 
-## Regenerating shared schemas
+Normal CI has no AWS credential. An administrator may dispatch the optional CI
+job with a temporary OIDC role and a unique prefix beginning
+`integration-tests/`. The test asserts the exact bucket/region, creates one
+generated key, verifies it, and deletes only that key. Never point a test at a
+broad production prefix.
 
-The Pydantic models are the source of truth:
+## Troubleshooting
 
-```bash
-make schemas       # regenerate packages/schemas
-make schema-check  # fail if committed schemas drifted, then validate extension payloads
-```
+| Symptom | Safe action |
+| --- | --- |
+| Port 8000 busy | `API_PORT=18080 docker compose up -d api` |
+| Scratch database stale | `make test-db-down && make test-integration` |
+| Migration drift | Generate/review a revision; do not alter the assertion |
+| Extension fixture fails | Add a structural sanitized fixture before changing selectors |
+| Worker reports AWS auth | Keep gates false locally or use the approved explicit AWS test |
+| Production TLS smoke fails | Confirm OpenSSL is installed and port 18443 is free |
 
-## Common problems
-
-| Symptom | Cause | Fix |
-| --- | --- | --- |
-| `alembic check` reports operations | Models changed without a migration | `alembic revision --autogenerate -m "..."` |
-| Extension shows "Waiting for company configuration" | No managed policy, or the backend is unreachable | Set `apiBaseUrl` in managed policy; check `/health/ready` |
-| Popup shows "not enabled" | Capture gates are false | Set both gates in `.env` and restart the API |
-| Nothing is archived on a ChatGPT page | Workspace not verified | Check `MANAGED_WORKSPACE_LABEL` matches exactly; open the options page for the reason |
-| `docker compose up` fails on port 8080 | Port in use | `CADDY_HTTP_PORT=18080 make compose-up` |
-| Integration tests skip | `TEST_DATABASE_URL` unset | `make test-integration` sets it for you |
+Before submitting, run `make verify` and ensure the working tree contains only
+the intended changes.

@@ -54,15 +54,9 @@ aws ssm put-parameter --name /techsara-chat-archive/extension_ids \
   --value "<extension-id>" --type String --overwrite --region us-east-1
 ```
 
-Add the origin to Terraform so S3 accepts direct uploads:
-
-```hcl
-extension_origins = ["chrome-extension://<extension-id>"]
-```
-
-```bash
-cd infra/terraform && terraform apply
-```
+In S3 → `techsara-chatgpt` → Permissions → CORS, add only the permanent
+`chrome-extension://<extension-id>` origin with PUT, the approved checksum and
+encryption headers, and a short cache age. Verify with `aws s3api get-bucket-cors`.
 
 Then redeploy the backend so its CORS allowlist includes the extension.
 
@@ -163,4 +157,4 @@ the extension does not delete archived data; that is a retention decision.
 | Sign-in fails with a redirect error | Redirect URI not registered | Add `https://<id>.chromiumapp.org/oidc` in Google Cloud Console |
 | "not the managed company workspace" | Label mismatch | Compare `managedWorkspaceLabel` with what ChatGPT displays, exactly |
 | Nothing archives, no error | Capture gates are off | Expected until both server gates are true |
-| Attachment uploads fail | S3 CORS missing the extension origin | Add `extension_origins` in Terraform and apply |
+| Attachment uploads fail | S3 CORS missing the extension origin | Add the permanent origin in the S3 Console and verify with the CLI |

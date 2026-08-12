@@ -1,47 +1,80 @@
-# =============================================================================
-# Production overrides for the single EC2 instance.
-#
-#   docker compose -f compose.yaml -f compose.prod.yaml up -d
-#
-# Differences from development:
-#   * images are pulled by immutable tag, never built on the box;
-#   * secrets come from root-owned files under /srv/.../secrets rendered from
-#     SSM Parameter Store at deploy time — never from the environment;
-#   * MinIO is absent: production uses real S3 via the instance profile;
-#   * data lives on the encrypted EBS data volume under /srv;
-#   * resource limits are set so one service cannot starve the others.
-# =============================================================================
-
+# Production stack for one Ubuntu EC2 host. Cloudflare proxies HTTPS directly
+# to the TLS-enabled FastAPI container on port 443.
 name: techsara-chat-archive
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
 
 x-prod-env: &prod-env
   ENVIRONMENT: production
-  DEV_AUTH_ENABLED: "false"
-  LOG_FORMAT: json
-  LOG_MESSAGE_CONTENT: "false"
-  # In production the endpoint must be empty: boto3 talks to real S3 and the
-  # settings guard refuses to start if this is set.
+  APP_NAME: techsara-chat-archive
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL}
+  ARCHIVE_HOSTNAME: ${ARCHIVE_HOSTNAME:?set ARCHIVE_HOSTNAME}
+  API_BASE_PATH: /api/v1
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?set POSTGRES_USER}:REPLACE@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB}
+  POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+  DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-20}
+  DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-10}
+  AWS_REGION: us-east-1
+  S3_BUCKET: techsara-chatgpt
   S3_ENDPOINT_URL: ""
   S3_USE_PATH_STYLE: "false"
-  AWS_ACCESS_KEY_ID: ""
-  AWS_SECRET_ACCESS_KEY: ""
+  S3_ENCRYPTION_MODE: ${S3_ENCRYPTION_MODE:-SSE-S3}
+  S3_KMS_KEY_ID: ${S3_KMS_KEY_ID:-}
+  OIDC_ISSUER: ${OIDC_ISSUER:?set OIDC_ISSUER}
+  OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?set OIDC_CLIENT_ID}
+  OIDC_REQUIRED_HD: ${OIDC_REQUIRED_HD:?set OIDC_REQUIRED_HD}
+  OIDC_CLIENT_SECRET_FILE: /run/secrets/oidc_client_secret
+  ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS:?set ALLOWED_EMAIL_DOMAINS}
+  EXTENSION_IDS: ${EXTENSION_IDS:-}
+  ADMIN_ORIGINS: ${ADMIN_ORIGINS:-}
   JWT_SECRET_FILE: /run/secrets/jwt_secret
   CONFIG_SIGNING_KEY_FILE: /run/secrets/config_signing_key
-  OIDC_CLIENT_SECRET_FILE: /run/secrets/oidc_client_secret
+  DEV_AUTH_ENABLED: "false"
+  MANAGED_WORKSPACE_LABEL: ${MANAGED_WORKSPACE_LABEL:?set MANAGED_WORKSPACE_LABEL}
+  MANAGED_WORKSPACE_IDS: ${MANAGED_WORKSPACE_IDS:-}
+  BROWSER_CONTENT_CAPTURE_ENABLED: ${BROWSER_CONTENT_CAPTURE_ENABLED:-false}
+  OPENAI_WRITTEN_AUTHORIZATION_CONFIRMED: ${OPENAI_WRITTEN_AUTHORIZATION_CONFIRMED:-false}
+  AUTO_ARCHIVE_CURRENT_OPEN_CHAT: ${AUTO_ARCHIVE_CURRENT_OPEN_CHAT:-true}
+  ATTACHMENT_CAPTURE_ENABLED: ${ATTACHMENT_CAPTURE_ENABLED:-true}
+  KILL_SWITCH_ENABLED: ${KILL_SWITCH_ENABLED:-false}
+  TRAINING_EXPORT_ENABLED: ${TRAINING_EXPORT_ENABLED:-false}
   OPENAI_COMPLIANCE_API_KEY_FILE: /run/secrets/openai_compliance_api_key
-  POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+  LOG_FORMAT: json
+  LOG_MESSAGE_CONTENT: "false"
+  API_WORKERS: ${API_WORKERS:-3}
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+
+x-app-service: &app-service
+  image: ${IMAGE_REPOSITORY:?set IMAGE_REPOSITORY}:${IMAGE_TAG:?set IMAGE_TAG}
+  pull_policy: always
+  environment: *prod-env
+  volumes:
+    - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets/postgres_password:/run/secrets/postgres_password:ro
+    - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets/jwt_secret:/run/secrets/jwt_secret:ro
+    - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets/config_signing_key:/run/secrets/config_signing_key:ro
+    - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets/oidc_client_secret:/run/secrets/oidc_client_secret:ro
+    - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets/openai_compliance_api_key:/run/secrets/openai_compliance_api_key:ro
+  networks: [backend, egress]
+  logging: *default-logging
+  read_only: true
+  tmpfs: ["/tmp:size=128m"]
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.14-alpine
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_INITDB_ARGS: "--data-checksums"
       TZ: UTC
-    volumes:
-      - ${DATA_ROOT:-/srv/techsara-chat-archive}/postgres:/var/lib/postgresql/data
-      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets/postgres_password:/run/secrets/postgres_password:ro
     command:
       - postgres
       - -c
@@ -53,11 +86,7 @@ services:
       - -c
       - effective_cache_size=5GB
       - -c
-      - max_connections=200
-      - -c
-      - random_page_cost=1.1
-      - -c
-      - effective_io_concurrency=200
+      - max_connections=120
       - -c
       - wal_compression=on
       - -c
@@ -68,88 +97,66 @@ services:
       - log_min_duration_statement=1000
       - -c
       - track_io_timing=on
-      - -c
-      - shared_preload_libraries=pg_stat_statements
+    volumes:
+      - ${DATA_ROOT:-/srv/techsara-chat-archive}/postgres:/var/lib/postgresql/data
+      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets/postgres_server_password:/run/secrets/postgres_password:ro
+    shm_size: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks: [backend]
+    logging: *default-logging
+    security_opt: ["no-new-privileges:true"]
     deploy:
       resources:
         limits:
           memory: 3g
+          cpus: "1.25"
         reservations:
           memory: 2g
-    shm_size: 512m
-
-  # MinIO exists only for local development; scaling it to zero here keeps a
-  # stray `--profile dev` from ever starting it on the instance.
-  minio:
-    profiles: [never]
-  minio-init:
-    profiles: [never]
 
   migrate:
-    image: ${IMAGE_REPOSITORY}:${IMAGE_TAG}
-    pull_policy: always
-    build: !reset null
-    environment:
-      <<: *prod-env
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:REPLACE@postgres:5432/${POSTGRES_DB}
-      AWS_REGION: ${AWS_REGION}
-      S3_BUCKET: ${S3_BUCKET}
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
-      ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS}
-      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID}
-      OIDC_ISSUER: ${OIDC_ISSUER}
-      OIDC_REQUIRED_HD: ${OIDC_REQUIRED_HD}
-      EXTENSION_IDS: ${EXTENSION_IDS}
-      MANAGED_WORKSPACE_LABEL: ${MANAGED_WORKSPACE_LABEL}
-      MANAGED_WORKSPACE_IDS: ${MANAGED_WORKSPACE_IDS}
-    volumes:
-      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets:/run/secrets:ro
+    <<: *app-service
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.5"
 
   api:
-    image: ${IMAGE_REPOSITORY}:${IMAGE_TAG}
-    pull_policy: always
-    build: !reset null
-    environment:
-      <<: *prod-env
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:REPLACE@postgres:5432/${POSTGRES_DB}
-      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-20}
-      DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-20}
-      AWS_REGION: ${AWS_REGION}
-      S3_BUCKET: ${S3_BUCKET}
-      S3_ENCRYPTION_MODE: ${S3_ENCRYPTION_MODE:-SSE-S3}
-      S3_KMS_KEY_ID: ${S3_KMS_KEY_ID:-}
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
-      API_BASE_PATH: ${API_BASE_PATH:-/api/v1}
-      ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS}
-      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID}
-      OIDC_ISSUER: ${OIDC_ISSUER}
-      OIDC_REQUIRED_HD: ${OIDC_REQUIRED_HD}
-      EXTENSION_IDS: ${EXTENSION_IDS}
-      ADMIN_ORIGINS: ${ADMIN_ORIGINS:-}
-      MANAGED_WORKSPACE_LABEL: ${MANAGED_WORKSPACE_LABEL}
-      MANAGED_WORKSPACE_IDS: ${MANAGED_WORKSPACE_IDS}
-      BROWSER_CONTENT_CAPTURE_ENABLED: ${BROWSER_CONTENT_CAPTURE_ENABLED:-false}
-      OPENAI_WRITTEN_AUTHORIZATION_CONFIRMED: ${OPENAI_WRITTEN_AUTHORIZATION_CONFIRMED:-false}
-      AUTO_ARCHIVE_CURRENT_OPEN_CHAT: ${AUTO_ARCHIVE_CURRENT_OPEN_CHAT:-true}
-      ATTACHMENT_CAPTURE_ENABLED: ${ATTACHMENT_CAPTURE_ENABLED:-true}
-      KILL_SWITCH_ENABLED: ${KILL_SWITCH_ENABLED:-false}
-      TRAINING_EXPORT_ENABLED: ${TRAINING_EXPORT_ENABLED:-false}
-      RATE_LIMIT_REQUESTS_PER_MINUTE: ${RATE_LIMIT_REQUESTS_PER_MINUTE:-300}
-      API_WORKERS: ${API_WORKERS:-3}
-      GIT_SHA: ${IMAGE_TAG}
-    command: ["gunicorn", "app.main:app",
-              "--worker-class", "uvicorn.workers.UvicornWorker",
-              "--workers", "${API_WORKERS:-3}",
-              "--bind", "0.0.0.0:8000",
-              "--timeout", "60",
-              "--graceful-timeout", "30",
-              "--keep-alive", "5",
-              "--max-requests", "2000",
-              "--max-requests-jitter", "200",
-              "--access-logfile", "-",
-              "--error-logfile", "-"]
+    <<: *app-service
+    restart: unless-stopped
+    command: ["gunicorn", "app.main:app", "--worker-class", "uvicorn.workers.UvicornWorker", "--workers", "3", "--bind", "0.0.0.0:8443", "--certfile", "/run/tls/origin.pem", "--keyfile", "/run/tls/origin.key", "--timeout", "60", "--graceful-timeout", "30", "--keep-alive", "5", "--max-requests", "2000", "--max-requests-jitter", "200", "--access-logfile", "-", "--error-logfile", "-"]
     volumes:
-      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets:/run/secrets:ro
+      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets/postgres_password:/run/secrets/postgres_password:ro
+      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets/jwt_secret:/run/secrets/jwt_secret:ro
+      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets/config_signing_key:/run/secrets/config_signing_key:ro
+      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets/oidc_client_secret:/run/secrets/oidc_client_secret:ro
+      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets/openai_compliance_api_key:/run/secrets/openai_compliance_api_key:ro
+      - ${DATA_ROOT:-/srv/techsara-chat-archive}/tls/origin.pem:/run/tls/origin.pem:ro
+      - ${DATA_ROOT:-/srv/techsara-chat-archive}/tls/origin.key:/run/tls/origin.key:ro
+    ports:
+      - "0.0.0.0:${HTTPS_PORT:-443}:8443"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fkSs -H \"Host: $${ARCHIVE_HOSTNAME}\" https://127.0.0.1:8443/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    stop_grace_period: 30s
     deploy:
       resources:
         limits:
@@ -159,26 +166,17 @@ services:
           memory: 768m
 
   worker:
-    image: ${IMAGE_REPOSITORY}:${IMAGE_TAG}
-    pull_policy: always
-    build: !reset null
-    environment:
-      <<: *prod-env
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:REPLACE@postgres:5432/${POSTGRES_DB}
-      AWS_REGION: ${AWS_REGION}
-      S3_BUCKET: ${S3_BUCKET}
-      S3_ENCRYPTION_MODE: ${S3_ENCRYPTION_MODE:-SSE-S3}
-      S3_KMS_KEY_ID: ${S3_KMS_KEY_ID:-}
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
-      ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS}
-      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID}
-      OIDC_ISSUER: ${OIDC_ISSUER}
-      MANAGED_WORKSPACE_LABEL: ${MANAGED_WORKSPACE_LABEL}
-      TRAINING_EXPORT_ENABLED: ${TRAINING_EXPORT_ENABLED:-false}
-      RAW_RETENTION_DAYS: ${RAW_RETENTION_DAYS:-365}
-      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
-    volumes:
-      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets:/run/secrets:ro
+    <<: *app-service
+    restart: unless-stopped
+    command: ["python", "-m", "app.workers.worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      disable: true
+    stop_grace_period: 60s
     deploy:
       resources:
         limits:
@@ -188,25 +186,23 @@ services:
           memory: 384m
 
   compliance-poller:
-    image: ${IMAGE_REPOSITORY}:${IMAGE_TAG}
-    pull_policy: always
-    build: !reset null
+    <<: *app-service
+    profiles: [compliance]
+    restart: unless-stopped
+    command: ["python", "-m", "app.workers.compliance_poller"]
     environment:
       <<: *prod-env
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:REPLACE@postgres:5432/${POSTGRES_DB}
-      AWS_REGION: ${AWS_REGION}
-      S3_BUCKET: ${S3_BUCKET}
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
-      ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS}
-      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID}
       COMPLIANCE_POLL_ENABLED: ${COMPLIANCE_POLL_ENABLED:-false}
       OPENAI_COMPLIANCE_BASE_URL: ${OPENAI_COMPLIANCE_BASE_URL:-}
       OPENAI_COMPLIANCE_LOG_PATH: ${OPENAI_COMPLIANCE_LOG_PATH:-}
       OPENAI_COMPLIANCE_FILES_PATH: ${OPENAI_COMPLIANCE_FILES_PATH:-}
-      COMPLIANCE_POLL_INTERVAL_SECONDS: ${COMPLIANCE_POLL_INTERVAL_SECONDS:-300}
-      COMPLIANCE_OVERLAP_SECONDS: ${COMPLIANCE_OVERLAP_SECONDS:-600}
-    volumes:
-      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets:/run/secrets:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      disable: true
     deploy:
       resources:
         limits:
@@ -214,61 +210,62 @@ services:
           cpus: "0.5"
 
   backup:
-    image: ${IMAGE_REPOSITORY}:${IMAGE_TAG}
-    pull_policy: always
-    build: !reset null
+    <<: *app-service
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/opt/scripts/backup_loop.sh"]
     environment:
       <<: *prod-env
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:REPLACE@postgres:5432/${POSTGRES_DB}
-      AWS_REGION: ${AWS_REGION}
-      S3_BUCKET: ${S3_BUCKET}
       BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-90}
       PGHOST: postgres
       PGUSER: ${POSTGRES_USER}
       PGDATABASE: ${POSTGRES_DB}
-      PGPASSFILE: /run/secrets/pgpass
+      PGPASS_SOURCE_FILE: /run/secrets/pgpass
+      PGPASSFILE: /tmp/.pgpass
     volumes:
-      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets:/run/secrets:ro
+      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets/pgpass:/run/secrets/pgpass:ro
       - ${DATA_ROOT:-/srv/techsara-chat-archive}/backups:/var/backups/techsara
       - ./scripts:/opt/scripts:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      disable: true
     deploy:
       resources:
         limits:
           memory: 768m
-
-  caddy:
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    environment:
-      CADDY_DOMAIN: ${CADDY_DOMAIN}
-      CADDY_EMAIL: ${CADDY_EMAIL}
-      MAX_REQUEST_BYTES: ${MAX_REQUEST_BYTES:-2621440}
-    volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - ${DATA_ROOT:-/srv/techsara-chat-archive}/caddy/data:/data
-      - ${DATA_ROOT:-/srv/techsara-chat-archive}/caddy/config:/config
-    deploy:
-      resources:
-        limits:
-          memory: 384m
+          cpus: "0.5"
 
   pgadmin:
+    image: dpage/pgadmin4:8.14
     profiles: [admin]
-    # Loopback only: reach it through SSM Session Manager port forwarding.
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:?set PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD_FILE: /run/secrets/pgadmin_password
+      PGADMIN_DISABLE_POSTFIX: "true"
+      PGADMIN_CONFIG_SERVER_MODE: "True"
     ports:
-      - "127.0.0.1:5050:5050"
+      - "127.0.0.1:${PGADMIN_PORT:-5050}:80"
     volumes:
       - ${DATA_ROOT:-/srv/techsara-chat-archive}/pgadmin:/var/lib/pgadmin
+      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets/pgadmin_password:/run/secrets/pgadmin_password:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [backend]
+    logging: *default-logging
+    security_opt: ["no-new-privileges:true"]
     deploy:
       resources:
         limits:
           memory: 512m
+          cpus: "0.5"
 
-volumes:
-  postgres-data:
-    name: techsara-postgres-data-unused
-  minio-data:
-    name: techsara-minio-data-unused
+networks:
+  backend:
+    driver: bridge
+    internal: true
+  egress:
+    driver: bridge

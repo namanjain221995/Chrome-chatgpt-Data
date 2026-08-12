@@ -15,7 +15,7 @@ stopped when nobody is using it.
 ```bash
 aws ssm start-session --target <instance-id>
 cd /opt/techsara-chat-archive
-sudo docker compose -f compose.yaml -f compose.prod.yaml --profile admin up -d pgadmin
+sudo docker compose -f compose.prod.yaml --profile admin up -d pgadmin
 ```
 
 ### 2. Forward the port from your workstation
@@ -28,7 +28,7 @@ aws ssm start-session \
   --region us-east-1
 ```
 
-Terraform prints this exact command as the `pgadmin_port_forward_command` output.
+The instance ID comes from the EC2 Console or `aws ec2 describe-instances`.
 
 ### 3. Open it
 
@@ -55,7 +55,7 @@ aws ssm get-parameter --name /techsara-chat-archive/pgadmin_password \
 ### 5. Stop it when you are done
 
 ```bash
-sudo docker compose -f compose.yaml -f compose.prod.yaml --profile admin stop pgadmin
+sudo docker compose -f compose.prod.yaml --profile admin stop pgadmin
 ```
 
 Leaving it running consumes ~300 MiB and widens the attack surface for no
@@ -63,7 +63,7 @@ benefit.
 
 ## Rules
 
-1. **Never** publish port 5050 on `0.0.0.0`, and never put pgAdmin behind Caddy.
+1. **Never** publish port 5050 on `0.0.0.0` or route public traffic to pgAdmin.
 2. Prefer read-only queries. Data changes belong in a migration or a script that
    can be reviewed and repeated.
 3. Anything you do here is outside the application's audit trail. For anything
@@ -114,6 +114,6 @@ SELECT created_at, actor_email, action, resource_type, outcome
 `psql` inside the container is often faster and leaves less running:
 
 ```bash
-sudo docker compose -f compose.yaml -f compose.prod.yaml exec postgres \
+sudo docker compose -f compose.prod.yaml exec postgres \
   psql -U techsara_app -d techsara_chat_archive
 ```

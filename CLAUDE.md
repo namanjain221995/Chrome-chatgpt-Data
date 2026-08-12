@@ -1,114 +1,77 @@
-# CLAUDE.md — permanent project instructions
+# Permanent project instructions
 
-Read this before changing anything in this repository.
+## System boundary
 
-## What this system is
+This repository archives authorized conversations for roughly 250 employees.
+Production is one Ubuntu EC2 host with Docker Compose, PostgreSQL 16, FastAPI
+terminating origin TLS directly, a PostgreSQL-backed worker, private optional
+pgAdmin, nightly backups, an optional authorized compliance poller, and AWS S3 bucket
+`techsara-chatgpt` in `us-east-1`.
 
-A company-managed archive of approved ChatGPT conversations for ~250 employees:
-a Manifest V3 Chrome extension, a FastAPI backend, PostgreSQL 16 in Docker on
-one EC2 instance, and S3 for files, immutable raw JSON, exports and backups.
+## Invariants
 
-## Invariants — never violate these
+1. Never capture unsent drafts, keystrokes, passwords, cookies, page storage,
+   ChatGPT session tokens, hidden model reasoning, personal workspaces, or other
+   websites.
+2. Fail closed. Missing configuration, weak workspace evidence, either disabled
+   server gate, or the kill switch means capture nothing.
+3. The server decides policy. Local extension settings cannot enable capture.
+4. Never claim complete history from browser capture. Only the authorized
+   compliance feed may mark coverage `compliance_verified`.
+5. Never invent an upstream compliance endpoint or response field.
+6. Never commit a secret or log content, cookies, tokens, authorization headers,
+   passwords, presigned URLs, or credentials.
+7. Production AWS access comes only from the EC2 instance role and normal SDK
+   credential provider chain. The extension receives no AWS credential.
+8. PostgreSQL has no host port. FastAPI publishes only TLS port `443`; its EC2
+   security-group rule accepts only Cloudflare source ranges. Optional pgAdmin
+   binds only `127.0.0.1:5050` and is reached through SSM.
+9. Cloudflare proxied DNS uses Full (strict) and the API container reads its
+   root-owned Origin CA key through a read-only mount.
+10. Capture gates and training export default false and stay false during
+    development, deployment, migration, and rollback unless separately approved.
+11. No test automates a live ChatGPT account. Use sanitized DOM fixtures only.
 
-1. **Never capture unsent drafts, keystrokes, passwords, cookies or ChatGPT
-   session tokens.** The DOM adapter refuses to read `textarea`, `input`,
-   `contenteditable` and `form` elements. There is no keyboard listener. The
-   manifest requests no `cookies` permission, and the manifest validator fails
-   the build if one appears.
-2. **Never capture personal-workspace conversations.** Rejected at three layers:
-   the extension verifier, the API schema, and the ingestion service.
-   `PERSONAL_WORKSPACE_CAPTURE_ENABLED` is never honoured, even if set true.
-3. **Fail closed.** No configuration, no signals, no match, or any doubt means
-   capture nothing.
-4. **Server decides.** `BROWSER_CONTENT_CAPTURE_ENABLED` and
-   `OPENAI_WRITTEN_AUTHORIZATION_CONFIRMED` are server-side and cannot be
-   overridden by any local extension setting. Both default to false.
-5. **Never overclaim coverage.** No UI or document may say all history is
-   archived. Only the compliance feed may set `compliance_verified`.
-6. **Never invent an OpenAI endpoint path.** Base URL, paths and field mapping
-   are configuration, taken from the authorized documentation.
-7. **Never commit a secret.** `make secret-scan` runs in CI. Terraform manages
-   non-secret SSM parameters only, because state stores values in plaintext.
-8. **Never expose PostgreSQL, pgAdmin or MinIO publicly.** Caddy is the only
-   public service.
-9. **Never use** DynamoDB, RDS, RDS Proxy, Lambda, SQS, ECS, Fargate,
-   ElastiCache or API Gateway. `make verify-no-prohibited-aws-services` proves it.
-10. **Never automate a live ChatGPT account in tests.** Sanitized DOM fixtures
-    only.
-
-## Where things live
+## Sources of truth
 
 | Concern | Location |
 | --- | --- |
-| Every ChatGPT selector and parsing heuristic | `apps/chrome-extension/src/modules/dom-adapter.ts` |
-| Capture policy decisions | `services/backend/app/services/policy.py` |
-| Wire contract (source of truth) | `services/backend/app/schemas/` |
-| Generated shared schemas | `packages/schemas/` (do not hand-edit) |
-| Job handlers | `services/backend/app/workers/handlers.py` |
-| Compliance endpoint specifics | `services/backend/app/adapters/openai_compliance.py` |
-| Production guardrails | `Settings._production_guardrails` in `app/core/config.py` |
+| DOM selectors and parsing | `apps/chrome-extension/src/modules/dom-adapter.ts` |
+| Capture decisions | `services/backend/app/services/policy.py` |
+| API wire models | `services/backend/app/schemas/` |
+| Generated schemas | `packages/schemas/` |
+| Production guards | `services/backend/app/core/config.py` |
+| S3 operations and keys | `services/backend/app/services/storage.py` |
+| Job claiming and retry | `services/backend/app/services/jobs.py` |
+| Worker handlers | `services/backend/app/workers/handlers.py` |
+| Production topology | `compose.prod.yaml` |
 
-## Rules for changes
+## Change rules
 
-### Adding an endpoint
-1. Define request and response models in `app/schemas/` with `extra="forbid"`.
-2. Enforce policy through `build_context`, which checks the gates and the
-   workspace before any write.
-3. Audit anything administrative with `record_audit`.
-4. `make schemas` to regenerate the shared JSON Schemas, and commit them.
-5. Add tests, including a rejection case.
+For endpoints, use strict Pydantic request/response models, enforce policy before
+writes, audit administration, regenerate shared schemas, and add rejection tests.
 
-### Changing the database
-1. Edit the model, then `alembic revision --autogenerate`.
-2. Review the generated migration by hand. Autogenerate misses partitioning and
-   gets partial indexes wrong.
-3. `make migration-check` — it asserts no drift and a working downgrade/upgrade
-   round trip.
-4. Enums must use `_enum()` from `app/models/identity.py`. Plain `sa.Enum`
-   persists the member **name**, which silently breaks every partial index and
-   CHECK constraint written against the lowercase value. This has already
-   happened once; see ADR-004.
+For database changes, edit the model, generate/review an Alembic revision, and
+run `make migration-check`. Enums use the project `_enum()` helper so database
+values match partial indexes and constraints.
 
-### Changing the extension
-1. Selectors go in `dom-adapter.ts` and nowhere else.
-2. Add a sanitized fixture and a failing test before changing a selector.
-3. Bump `ADAPTER_VERSION` so archived messages record which build parsed them.
-4. The service worker and content script are built **separately** and must stay
-   self-contained: a content script cannot resolve an `import` at runtime. The
-   manifest validator fails the build if one survives; see ADR-007.
-5. Never assign `innerHTML`, never touch page `localStorage`, never read
-   `document.cookie`. ESLint enforces all three.
+For extension changes, keep selectors centralized, add sanitized fixtures,
+version parsing changes, and preserve separate self-contained worker/content
+bundles. Never assign page HTML or read page cookies/storage.
 
-### Changing capture behaviour
-Update [docs/CAPTURE_LIMITATIONS.md](docs/CAPTURE_LIMITATIONS.md) in the same
-change. That document is a promise to employees, not marketing.
+For storage changes, keep bytes out of FastAPI, pin presigned constraints, store
+metadata/hashes/keys in PostgreSQL, enforce encryption/checksums, and keep all
+tests network-free except the explicitly authorized dedicated-prefix workflow.
 
-## Verification
+For deployment changes, preserve root-owned secret files, direct origin TLS,
+Cloudflare-only port 443 ingress, internal database networking, immutable
+application tags, pre-migration backup, and documented rollback.
 
-```bash
-make verify     # lint, typecheck, tests, migrations, integration, schemas,
-                # extension package, compose config, terraform, security, docs
-```
+## Required gate
 
-`make verify` must pass before any merge. If a check is slow, make it faster —
-do not remove it.
+Run `make verify` before merge. Do not disable or weaken a check to make it pass.
+Python uses Ruff and typed definitions; TypeScript is strict; shell scripts must
+pass `bash -n`. Error messages should state the failure and safe next action.
 
-## Style
-
-- Python: ruff (line length 100), full type annotations, docstrings that explain
-  **why**, not what.
-- TypeScript: strict mode, no `any`, explicit return types.
-- Comments earn their place by explaining a decision, a trade-off or a
-  non-obvious constraint. Do not narrate the code.
-- Error messages are for a human being at 3 a.m.: say what went wrong and what
-  to do about it.
-
-## Honesty rules
-
-This system archives employee conversations. That imposes obligations:
-
-- State limitations plainly, in the product and in the documentation.
-- Never let a UI imply more coverage than exists.
-- When something cannot be captured, record that fact (`metadata_only`,
-  `partial_scroll_limit`) rather than silently omitting it.
-- When a test is skipped or a feature is gated off, say so in the final report.
+When capture behavior changes, update `docs/CAPTURE_LIMITATIONS.md` in the same
+change. That document is a promise to employees and auditors.

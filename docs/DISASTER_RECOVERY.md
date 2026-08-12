@@ -17,8 +17,8 @@ Configurable goals, not guarantees:
 Compose restarts it (`restart: unless-stopped`). If it crash-loops:
 
 ```bash
-sudo docker compose -f compose.yaml -f compose.prod.yaml logs --tail 100 <service>
-sudo docker compose -f compose.yaml -f compose.prod.yaml up -d --force-recreate <service>
+sudo docker compose -f compose.prod.yaml logs --tail 100 <service>
+sudo docker compose -f compose.prod.yaml up -d --force-recreate <service>
 ```
 
 No data loss: the queue is in PostgreSQL and client work is in IndexedDB.
@@ -39,10 +39,8 @@ Extensions flush their queued items on reconnect. Nothing is lost.
 **Target: ~1 hour.**
 
 ```bash
-# 1. Replace the instance, keeping the volume
-cd infra/terraform
-terraform taint aws_instance.archive
-terraform apply         # the data volume has prevent_destroy
+# 1. Launch a reviewed replacement from docs/AWS_MANUAL_SETUP.md and attach the
+# preserved encrypted data volume without formatting it.
 
 # 2. Deploy onto the new instance
 aws ssm start-session --target <new-instance-id>
@@ -58,8 +56,7 @@ it. Verify row counts against the last known values before announcing recovery.
 **Target: ~4 hours.**
 
 ```bash
-# 1. Rebuild infrastructure
-cd infra/terraform && terraform apply
+# 1. Rebuild the host from docs/AWS_MANUAL_SETUP.md
 
 # 2. Secrets are already in SSM; deploy the application
 aws ssm start-session --target <new-instance-id>
@@ -67,9 +64,9 @@ cd /opt/techsara-chat-archive
 sudo IMAGE_TAG=<sha> ./scripts/deploy_ec2.sh
 
 # 3. Restore the newest backup
-sudo docker compose -f compose.yaml -f compose.prod.yaml stop api worker compliance-poller
-aws s3 ls s3://<bucket>/backups/postgres/ --recursive | tail -5
-sudo docker compose -f compose.yaml -f compose.prod.yaml exec backup \
+sudo docker compose -f compose.prod.yaml stop api worker compliance-poller
+aws s3 ls s3://techsara-chatgpt/backups/postgres/ --recursive --region us-east-1 | tail -5
+sudo docker compose -f compose.prod.yaml exec backup \
   sh /opt/scripts/restore_postgres.sh --from-s3 <key> --target-db techsara_restored
 
 # 4. Verify, then promote
@@ -80,7 +77,7 @@ sudo docker compose ... exec postgres psql -U techsara_app -d postgres \
   -c "ALTER DATABASE techsara_restored RENAME TO techsara_chat_archive;"
 
 # 5. Restart and confirm
-sudo docker compose -f compose.yaml -f compose.prod.yaml up -d
+sudo docker compose -f compose.prod.yaml up -d
 curl -s https://archive.example.com/health/ready
 ```
 
@@ -94,10 +91,10 @@ gap matters.
 
 ```bash
 # Stop writers immediately
-sudo docker compose -f compose.yaml -f compose.prod.yaml stop api worker compliance-poller
+sudo docker compose -f compose.prod.yaml stop api worker compliance-poller
 
 # Restore the pre-migration backup that deploy_ec2.sh took (step 3 of a deploy)
-aws s3 ls s3://<bucket>/backups/postgres/$(date -u +%Y/%m/%d)/ --recursive
+aws s3 ls "s3://techsara-chatgpt/backups/postgres/$(date -u +%Y/%m/%d)/" --recursive --region us-east-1
 sudo docker compose ... exec backup sh /opt/scripts/restore_postgres.sh \
   --from-s3 <pre-migration-key> --target-db techsara_rollback
 ```
@@ -114,8 +111,8 @@ prefix, which makes a manual rebuild in another region possible.
 
 ## EBS snapshots
 
-Terraform does not manage the snapshot schedule, because it is usually an
-account-level policy. Configure AWS Backup or Data Lifecycle Manager to snapshot
+The snapshot schedule is an account-level manual control. Configure AWS Backup
+or Data Lifecycle Manager to snapshot
 volumes tagged `Backup=daily` (the data volume already carries that tag):
 
 ```bash
@@ -142,7 +139,7 @@ loss.
 
 ## Rehearsal checklist (quarterly)
 
-- [ ] Provision a scratch instance from Terraform
+- [ ] Provision a scratch instance from the AWS Console checklist
 - [ ] Restore the newest production backup into it
 - [ ] Verify row counts against production
 - [ ] Verify the Alembic revision matches

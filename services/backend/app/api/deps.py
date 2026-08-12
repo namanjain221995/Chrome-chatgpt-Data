@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import ipaddress
 from dataclasses import dataclass
 from typing import Annotated
 
@@ -53,19 +54,23 @@ class Principal:
 
 
 def client_ip(request: Request) -> str | None:
-    """Client address, trusting only the proxy hop Caddy adds.
+    """Return the client address from Cloudflare at the production origin.
 
-    Caddy sets ``X-Forwarded-For`` and is the only thing that can reach the API
-    port (the container publishes nothing to the host), so the *last* entry is
-    the one Caddy observed. Anything a client injects appears earlier and is
-    ignored.
+    Production port 443 is restricted to Cloudflare source ranges by the EC2
+    security group, and Cloudflare overwrites ``CF-Connecting-IP``. Outside
+    production, use the direct peer address and never trust forwarded headers.
     """
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        parts = [p.strip() for p in forwarded.split(",") if p.strip()]
-        if parts:
-            return parts[-1][:64]
-    return request.client.host if request.client else None
+    candidate = (
+        request.headers.get("cf-connecting-ip")
+        if get_settings().is_production
+        else (request.client.host if request.client else None)
+    )
+    if not candidate:
+        return None
+    try:
+        return str(ipaddress.ip_address(candidate.strip()))
+    except ValueError:
+        return None
 
 
 async def get_bearer_token(

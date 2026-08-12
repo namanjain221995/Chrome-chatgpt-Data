@@ -16,7 +16,7 @@ An empty `warnings` array means nothing needs attention.
 
 ```bash
 # Backups exist, are fresh, and have manifests
-sudo docker compose -f compose.yaml -f compose.prod.yaml exec backup \
+sudo docker compose -f compose.prod.yaml exec backup \
   sh /opt/scripts/verify_backup.sh
 
 # Disk
@@ -134,7 +134,7 @@ sudo xfs_growfs /srv/techsara-chat-archive
 | Attachments stuck in quarantine | `attachments.state` counts | `finalize_attachment` job errors |
 | 429s reported | Rate limit configuration | Raise `RATE_LIMIT_REQUESTS_PER_MINUTE` if legitimate |
 | 503 `backpressure` | Queue depth vs threshold | Expected under load; investigate if sustained |
-| Certificate errors | Caddy logs | DNS resolves? Port 80 reachable for ACME? |
+| Certificate errors | Cloudflare events and API logs | Proxied DNS? Origin SAN valid? Full (strict)? |
 | Sign-in failures | Which error | Redirect URI, hosted domain, allowed domains |
 
 Detailed incident procedures are in [INCIDENT_RUNBOOK.md](INCIDENT_RUNBOOK.md).

@@ -4,7 +4,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "${ROOT}"
+cd "${ROOT}" || exit 1
 
 RED=$'\033[31m'; GREEN=$'\033[32m'; RESET=$'\033[0m'
 [ -t 1 ] || { RED=""; GREEN=""; RESET=""; }
@@ -19,7 +19,9 @@ REQUIRED=(
   docs/ARCHITECTURE.md
   docs/ASSUMPTIONS.md
   docs/DECISIONS.md
-  docs/AWS_STEP_BY_STEP.md
+  docs/AWS_MANUAL_SETUP.md
+  docs/AWS_CONSOLE_CHECKLIST.md
+  docs/CLOUDFLARE_DNS_AND_TLS.md
   docs/CHROME_ENTERPRISE_DEPLOYMENT.md
   docs/LOCAL_DEVELOPMENT.md
   docs/PRODUCTION_DEPLOYMENT.md
@@ -37,7 +39,6 @@ REQUIRED=(
   docs/INCIDENT_RUNBOOK.md
   docs/TESTING.md
   docs/OPERATIONS.md
-  scripts/aws-console-checklist.md
 )
 
 echo "Documentation check"

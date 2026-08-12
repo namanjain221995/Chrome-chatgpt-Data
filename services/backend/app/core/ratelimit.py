@@ -1,9 +1,9 @@
 """Rate limiting without an external cache.
 
 ElastiCache/Redis are prohibited for version 1, so limiting is enforced in two
-independent places:
+independent layers:
 
-1. Caddy applies coarse per-IP connection and request limits at the edge.
+1. Cloudflare applies coarse request controls at the edge.
 2. This module applies a per-process sliding-window limiter keyed by user,
    device and client IP.
 

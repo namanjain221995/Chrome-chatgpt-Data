@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import ORJSONResponse
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.api.middleware import (
     BodySizeLimitMiddleware,
@@ -76,7 +76,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="TechSara Managed ChatGPT Session Archive",
         description=DESCRIPTION,
         version=settings.app_version,
-        default_response_class=ORJSONResponse,
         lifespan=lifespan,
         docs_url=None if settings.is_production else "/docs",
         redoc_url=None,
@@ -87,6 +86,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(BodySizeLimitMiddleware)
     app.add_middleware(CorrelationIdMiddleware)
+    if settings.is_production:
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=[settings.archive_hostname])
 
     origins = settings.allowed_origins
     if origins:

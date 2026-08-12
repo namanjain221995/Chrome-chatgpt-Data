@@ -108,9 +108,9 @@ jobs:
             ### Deploying
             ```bash
             aws ssm send-command \
-              --document-name techsara-chat-archive-deploy \
+              --document-name AWS-RunShellScript \
               --targets Key=instanceids,Values=<instance-id> \
-              --parameters imageTag=${{ steps.meta.outputs.image_tag }}
+              --parameters 'commands=["cd /opt/techsara-chat-archive && sudo IMAGE_TAG=${{ steps.meta.outputs.image_tag }} ./scripts/deploy_ec2.sh"]'
             ```
 
             ### Chrome Enterprise

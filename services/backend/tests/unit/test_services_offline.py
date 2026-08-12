@@ -8,7 +8,11 @@ import json
 import uuid
 from datetime import UTC, datetime
 
+import boto3
 import pytest
+from botocore import UNSIGNED
+from botocore.client import Config as BotoConfig
+from botocore.stub import Stubber
 
 from app.adapters.openai_compliance import ComplianceAdapter, FieldMap, _parse_time
 from app.core.config import Settings
@@ -309,7 +313,7 @@ class TestFakeStorageContract:
 
 
 class TestEncryptionArguments:
-    """Encryption headers must always be sent to real S3, never to MinIO."""
+    """Encryption and checksum headers are mandatory on AWS S3."""
 
     def _service(self, **overrides):
         from app.services.storage import StorageService
@@ -319,36 +323,64 @@ class TestEncryptionArguments:
         return StorageService(Settings(**base))
 
     def test_real_s3_gets_sse_s3_by_default(self) -> None:
-        args = self._service(s3_endpoint_url=None)._encryption_args()
+        args = self._service()._encryption_args()
         assert args["ServerSideEncryption"] == "AES256"
 
     def test_real_s3_gets_sse_kms_when_configured(self) -> None:
         args = self._service(
-            s3_endpoint_url=None,
             s3_encryption_mode="SSE-KMS",
             s3_kms_key_id="arn:aws:kms:us-east-1:1:key/abc",
         )._encryption_args()
         assert args["ServerSideEncryption"] == "aws:kms"
         assert args["SSEKMSKeyId"].endswith("key/abc")
 
-    def test_minio_gets_no_sse_header(self) -> None:
-        """MinIO answers NotImplemented without a KMS backend, which would make
-        every development and CI write fail."""
-        assert self._service(s3_endpoint_url="http://minio:9000")._encryption_args() == {}
+    def test_presign_pins_encryption_and_checksum(self) -> None:
+        class PresignClient:
+            def generate_presigned_url(self, *_args: object, **kwargs: object) -> str:
+                params = kwargs["Params"]
+                assert isinstance(params, dict)
+                assert params["ServerSideEncryption"] == "AES256"
+                assert params["ChecksumSHA256"]
+                return "https://techsara-chatgpt.s3.us-east-1.amazonaws.com/key?signed=true"
 
-    def test_presign_headers_follow_the_same_rule(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Presigning is a local signature computation, but botocore still needs
-        # a credential to sign with.
-        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
-        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
-        monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
-
-        _url, minio_headers, _expiry = self._service(
-            s3_endpoint_url="http://minio:9000"
-        ).presign_put(key="k", content_type="image/png", content_length=10)
-        assert "x-amz-server-side-encryption" not in minio_headers
-
-        _url, aws_headers, _expiry = self._service(s3_endpoint_url=None).presign_put(
-            key="k", content_type="image/png", content_length=10
+        service = self._service()
+        service._client = PresignClient()
+        _url, aws_headers, _expiry = service.presign_put(
+            key="k", content_type="image/png", content_length=10, sha256_hex_digest="a" * 64
         )
         assert aws_headers["x-amz-server-side-encryption"] == "AES256"
+        assert aws_headers["x-amz-checksum-sha256"]
+
+    @pytest.mark.asyncio
+    async def test_put_bytes_matches_botocore_contract(self) -> None:
+        """The unit suite validates the AWS request without a network service."""
+        from app.core.crypto import hex_to_b64, sha256_hex
+        from app.services.storage import StorageService
+
+        body = b"stubbed-s3-body"
+        digest = sha256_hex(body)
+        client = boto3.client(
+            "s3",
+            region_name="us-east-1",
+            config=BotoConfig(signature_version=UNSIGNED),
+        )
+        stubber = Stubber(client)
+        stubber.add_response(
+            "put_object",
+            {"VersionId": "version-1", "ETag": '"etag"'},
+            {
+                "Bucket": "test-bucket",
+                "Key": "raw/test.json",
+                "Body": body,
+                "ContentType": "application/json",
+                "Metadata": {"sha256": digest},
+                "ServerSideEncryption": "AES256",
+                "ChecksumSHA256": hex_to_b64(digest),
+            },
+        )
+        service = StorageService(Settings(environment="test", s3_bucket="test-bucket"))
+        service._client = client
+        with stubber:
+            result = await service.put_bytes("raw/test.json", body, content_type="application/json")
+        stubber.assert_no_pending_responses()
+        assert result.version_id == "version-1"

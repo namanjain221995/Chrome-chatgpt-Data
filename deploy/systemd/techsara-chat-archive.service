@@ -26,10 +26,10 @@ EnvironmentFile=/opt/techsara-chat-archive/.env
 TimeoutStartSec=900
 TimeoutStopSec=180
 
-ExecStartPre=/usr/bin/docker compose -f compose.yaml -f compose.prod.yaml pull --quiet
-ExecStart=/usr/bin/docker compose -f compose.yaml -f compose.prod.yaml up -d --remove-orphans
-ExecStop=/usr/bin/docker compose -f compose.yaml -f compose.prod.yaml down
-ExecReload=/usr/bin/docker compose -f compose.yaml -f compose.prod.yaml up -d --remove-orphans
+ExecStartPre=/usr/bin/docker compose -f compose.prod.yaml pull --quiet
+ExecStart=/usr/bin/docker compose -f compose.prod.yaml up -d --remove-orphans
+ExecStop=/usr/bin/docker compose -f compose.prod.yaml down
+ExecReload=/usr/bin/docker compose -f compose.prod.yaml up -d --remove-orphans
 
 Restart=on-failure
 RestartSec=30

@@ -30,7 +30,7 @@ over the message target.
 | Backpressure when the queue saturates | `JOB_QUEUE_BACKPRESSURE_THRESHOLD` (503 + Retry-After) |
 | Client batching, compression and jittered retries | Extension offline queue |
 | Attachments bypass the API entirely | Presigned S3 PUT |
-| Edge and application rate limits | Caddy + `CompositeRateLimiter` |
+| Edge and application rate limits | Cloudflare controls + `CompositeRateLimiter` |
 | Bounded worker concurrency | `WORKER_CONCURRENCY` |
 | Monthly partitions on the high-volume tables | Keeps index maintenance bounded |
 
@@ -44,7 +44,7 @@ over the message target.
 | API (3 workers) | ~1.5 GiB | ~500 MiB per worker |
 | Worker | ~500 MiB | Concurrency 2 |
 | Compliance poller | ~200 MiB | Idle unless configured |
-| Caddy | ~100 MiB | |
+| Origin TLS overhead | included in API | |
 | Backup | ~200 MiB | Peaks during a dump |
 | OS and Docker | ~800 MiB | |
 | **Headroom** | **~1.5 GiB** | pgAdmin and ClamAV stay stopped |
@@ -57,7 +57,7 @@ reason: neither fits comfortably alongside everything else on 8 GiB.
 ```
 API_WORKERS × (DATABASE_POOL_SIZE + DATABASE_MAX_OVERFLOW)
   + WORKER_CONCURRENCY + 1 + 5
-= 3 × (20 + 20) + 2 + 1 + 5 = 128     against max_connections = 200
+= 3 × (20 + 10) + 2 + 1 + 5 = 98     against max_connections = 120
 ```
 
 Raising `API_WORKERS` without recomputing this is the standard way to exhaust

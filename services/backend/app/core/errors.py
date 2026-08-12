@@ -43,7 +43,7 @@ class AppError(Exception):
 
 
 class ValidationError(AppError):
-    status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
     code = "validation_error"
 
 
@@ -75,7 +75,7 @@ class ConflictError(AppError):
 
 
 class PayloadTooLargeError(AppError):
-    status_code = status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+    status_code = status.HTTP_413_CONTENT_TOO_LARGE
     code = "payload_too_large"
 
 
@@ -144,7 +144,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             for err in exc.errors()[:25]
         ]
         return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             content=_error_body(
                 "validation_error", "Request failed schema validation", {"errors": safe}
             ),
