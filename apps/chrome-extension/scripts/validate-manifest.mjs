@@ -135,6 +135,9 @@ if (!manifest.storage?.managed_schema) {
   } else {
     const schema = JSON.parse(readFileSync(schemaPath, 'utf8'));
     if (schema.type !== 'object') fail('managed schema must describe an object');
+    if (Object.hasOwn(schema, 'additionalProperties')) {
+      fail('managed schema top-level object must not declare additionalProperties');
+    }
     if (!schema.properties?.apiBaseUrl) {
       fail('managed schema must expose apiBaseUrl so IT can point at the backend');
     }
