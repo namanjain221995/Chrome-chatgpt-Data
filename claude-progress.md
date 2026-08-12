@@ -80,6 +80,13 @@ The policy service now performs an idempotent PostgreSQL insert and selects the
 canonical row; a two-session regression test covers the race. A locally green
 tree is not final completion; the remote Actions run must also be green.
 
+GitHub Actions run `31636730931` passed six jobs but the container job found a
+cold-runner defect: the production smoke requested `--pull never` before its
+pinned PostgreSQL and pgAdmin images existed. The smoke now pulls only missing
+third-party images while retaining the already-built local backend image. The
+deprecated Node 20 checkout/upload action majors reported by that run were also
+updated to their current Node 24 releases. A replacement run is pending.
+
 ## External steps still intentionally manual
 
 - Secure and lifecycle-configure the existing S3 bucket.

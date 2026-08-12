@@ -28,7 +28,7 @@ jobs:
       extension_sha256: ${{ steps.package.outputs.sha256 }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Resolve the tag
         id: meta

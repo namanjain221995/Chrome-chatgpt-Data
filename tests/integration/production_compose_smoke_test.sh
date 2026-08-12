@@ -72,7 +72,7 @@ printf 'postgres:5432:*:techsara_app:%s\n' "${pgpass_password}" > "${DATA_ROOT}/
 chmod 0444 "${DATA_ROOT}/secrets/"*
 
 "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
-"${COMPOSE[@]}" --profile admin up -d --pull never --wait --wait-timeout 180 \
+"${COMPOSE[@]}" --profile admin up -d --pull missing --wait --wait-timeout 180 \
   postgres api worker pgadmin
 
 curl -fkSs -H 'Host: archive.example.com' \
