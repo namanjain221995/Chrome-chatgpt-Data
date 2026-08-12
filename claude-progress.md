@@ -1,116 +1,122 @@
 # Refactor progress
 
 **Project:** TechSara Managed ChatGPT Session Archive
+**This refactor:** Cloudflare Tunnel ingress + GitHub Actions → SSH → EC2 CI/CD
 **Started:** 2026-08-13
-**Status:** complete. Refactor commit `e46127306a2a5eb1f6d396c49f3dec675f0f84d6`
-passed GitHub Actions run `31638440372` on 2026-08-13.
+**Status:** in progress — see "Verification results" below.
 
-## Architecture checklist
+## State before this refactor
 
-- [x] Preserve the Manifest V3 extension and honest capture boundaries.
-- [x] Preserve FastAPI, PostgreSQL schema/migrations, idempotent ingestion, the
-  PostgreSQL job queue, worker handlers, backups, and compliance adapter.
-- [x] Publish only the FastAPI container's TLS listener on origin port 443.
-- [x] Restrict origin ingress to Cloudflare source ranges in the manual network
-  design; keep all database and administrative ports private.
-- [x] Keep PostgreSQL unexposed and application-to-database networking internal.
-- [x] Keep pgAdmin disabled by default under the `admin` profile and bind it to
-  `127.0.0.1:5050` only.
-- [x] Pin production storage to `techsara-chatgpt` in `us-east-1`, with no
-  endpoint override, path-style addressing, or static access keys.
-- [x] Preserve false defaults for browser capture authorization and training
-  export.
-- [x] Add optional compliance poller and nightly backup services.
-- [x] Add resource limits appropriate to an initial 2 vCPU / 8 GiB host.
+The application layer was already complete and CI was green on
+`64e05dab98b25dd5b1d0d1b7dbe64e0e6a04b2b0`: MV3 extension, FastAPI, PostgreSQL 16
+with 25 tables and Alembic migrations, a `FOR UPDATE SKIP LOCKED` job queue,
+presigned S3 uploads, backups with manifests, and the compliance adapter.
 
-## Host and deployment checklist
+The **deployment** layer targeted a different architecture:
 
-- [x] Add Origin CA installation/validation and a Cloudflare proxied-DNS Full
-  (strict) runbook without a host web server.
-- [x] Add Ubuntu Docker installation and idempotent EBS bootstrap scripts.
-- [x] Add SSM-to-root-file configuration rendering.
-- [x] Refactor EC2 deployment with immutable image tags, pre-migration backup,
-  migrations, readiness, application rollback, and direct TLS validation.
-- [x] Add public/private binding, database, role identity, S3, and TLS deployment
-  verification.
-- [x] Write manual AWS setup in the mandated 26-step order and a Console
-  checklist with CLI checkpoints and rollback notes.
-- [x] Update the deterministic release bundle for direct container TLS.
+| Was | Now |
+| --- | --- |
+| Ubuntu host | Amazon Linux 2023, `ec2-user` |
+| FastAPI terminating origin TLS on published port 443 | FastAPI `expose: 8000`, no host port |
+| Cloudflare proxied DNS + an origin certificate key mounted into the API | Named Cloudflare Tunnel, no origin certificate |
+| Security group open to Cloudflare ranges on 443 | No inbound application port at all |
+| GitHub Actions → AWS OIDC → SSM `SendCommand` | GitHub Actions → SSH → EC2 |
+| Deployment tarball bundle copied to the host | `git reset --hard <sha>` in the existing checkout |
+| GHCR image pushed on tags | Image built on the instance, tagged with the commit SHA |
+| `deploy_ec2.sh` | `deploy_production.sh` with `flock`, release records and rollback |
 
-## Test and CI checklist
+## Architecture conflicts found and resolved
 
-- [x] Remove local object-storage server dependencies from Compose and CI.
-- [x] Add botocore Stubber coverage for encrypted/checksummed AWS requests.
-- [x] Add an explicitly dispatched real-S3 test restricted to a supplied
-  `integration-tests/...` prefix and temporary OIDC credentials.
-- [x] Add production Compose topology and S3 guard assertions.
-- [x] Exercise production direct TLS with a disposable certificate.
-- [x] Add repository policy scans, secret scanning, dependency audits, migration
-  round trips, PostgreSQL integration tests, extension checks, and bundle output.
-- [x] Run every required Make target and repair all local failures.
-- [x] Run the Compose smoke and available load scenario.
-- [x] Commit and push the complete refactor.
-- [x] Monitor the pushed GitHub Actions run and repair every remote failure.
-- [x] Record the final green run URL/status and commit SHA.
+- [x] Direct origin TLS on published port 443 contradicted "Cloudflare Tunnel is
+  the only public application ingress". Removed the TLS listener, the
+  certificate mounts and `install_origin_tls.sh`.
+- [x] AWS/GitHub OIDC in `deploy.yml` and the real-S3 CI job contradicted
+  "Do NOT use GitHub OIDC / AWS OIDC". Both removed; no workflow requests
+  `id-token` any more.
+- [x] SSM `SendCommand` deployment contradicted "Use SSH". Replaced.
+- [x] The deployment bundle was a second, divergent way to put files on the
+  host. Removed, so there is exactly one deployment path.
+- [x] Ubuntu-specific `install_docker.sh` and `bootstrap_ec2_host.sh` could not
+  run on Amazon Linux 2023. Rewritten for `dnf`.
+
+## Defects found and fixed
+
+- [x] **`scripts/secret_scan.sh` never ran three of its checks.** The pattern was
+  passed positionally, so a pattern starting with `-----` was parsed by `grep`
+  as options; the command failed, stderr was discarded and the empty result was
+  reported as "ok". The private-key check had therefore never executed. Fixed
+  with `-e`, and proven by planting a key, an AWS id and a tunnel token in a
+  scanned file and observing all three findings.
+- [x] **pgAdmin's `127.0.0.1:5050` binding never existed.** A container attached
+  only to an `internal: true` Docker network cannot publish a host port: Docker
+  accepts the `PortBindings` and silently never creates them, so the documented
+  admin access could not have worked. pgAdmin now also joins a dedicated
+  non-internal `admin` bridge. `verify_production_config.sh` now fails any
+  service that publishes a port while attached only to internal networks, and
+  the production smoke asserts the real binding at runtime.
+- [x] **Readiness could block for ~60 s during an S3 outage.** `/health/ready`
+  used the data-path S3 client (5 retries, 60 s read timeout). It now uses a
+  dedicated probe client (1 attempt, 2 s connect, 3 s read) behind a 5 s
+  asyncio timeout and a 60 s result cache guarded by a lock.
+- [x] **Connection pools were unbounded relative to `max_connections`.** Added
+  `Settings.max_expected_database_connections` and a production guardrail that
+  refuses to start when pools could exceed `POSTGRES_MAX_CONNECTIONS` minus a
+  15-connection reserve, plus the same assertion statically in CI.
+
+## Compose and runtime checklist
+
+- [x] `cloudflared` service: pinned by tag **and** digest, `--no-autoupdate`,
+  token from a root-owned env file (never on the command line), loopback-only
+  metrics port for a real `/ready` health check.
+- [x] `api`: plain HTTP, `expose: 8000`, no `ports`, `${API_WORKERS}` honoured.
+- [x] `postgres`: internal network only, no host port, `pg_isready` health check,
+  `max_connections` shared with the application's pool budget.
+- [x] `pgadmin`: `admin` profile, loopback only, never started by a deployment.
+- [x] `compliance-poller`: `compliance` profile, started only when its flag is on.
+- [x] `backup`: nightly `pg_dump` → gzip → SHA-256 manifest → S3.
+- [x] Capture gates default false everywhere and are validated as literal
+  `true`/`false` when rendered from SSM.
+
+## Deployment checklist
+
+- [x] `scripts/prepare_server_storage.sh` — idempotent directory layout.
+- [x] `scripts/fetch_ssm_secrets.sh` — renders `.env.production` (0600) and
+  root-owned secret files; derives `ARCHIVE_HOSTNAME` from `public_base_url`.
+- [x] `scripts/deploy_production.sh` — `flock`, release records, exact-SHA
+  checkout, SSM render, topology validation, pre-migration backup, migration,
+  service recreation, six health checks, automatic rollback, dangling-only prune.
+- [x] `scripts/rollback_production.sh` — reuses the previous SHA-tagged image,
+  records the outcome honestly, never downgrades the schema.
+- [x] `scripts/verify_production.sh` — Docker, Compose, containers, PostgreSQL,
+  API, tunnel, public URL, listening sockets, AWS identity, S3, capture gates,
+  disk, memory and release identity.
+- [x] `scripts/test_restore.sh` — local mode and `--from-s3-latest`.
+
+## CI/CD checklist
+
+- [x] `ci.yml` — seven jobs, `workflow_call` enabled, `contents: read` only.
+- [x] `deploy.yml` — `push` to `main`, calls CI, `production-deploy` concurrency
+  with `cancel-in-progress: false`, environment `production`, SSH.
+- [x] `release.yml` — tag `v*`, extension ZIP + checksum, `contents: write` on
+  the publishing job only.
+- [x] `test-ec2-connection.yml` — manual, prints only non-sensitive facts.
+- [x] `.github/actions/ec2-ssh` — key at mode 600, pinned or reported host key,
+  `StrictHostKeyChecking yes` always.
+- [x] Extension artifact renamed to `techsara-chatgpt-extension-<git-sha>.zip`
+  and inspected by `scripts/verify_extension_package.sh`.
 
 ## Verification results
 
-`make verify` passed on the complete working tree on 2026-08-13:
-
-- Ruff, mypy (58 files), ESLint, TypeScript, Bash syntax, ShellCheck 0.10.0,
-  and actionlint 1.7.7 passed.
-- Backend: 166 unit tests and 112 PostgreSQL integration tests passed. The 11
-  SQLAlchemy transaction warnings are pre-existing test-rollback warnings.
-- Extension: 105 tests passed; Manifest V3 and eight shared-schema fixtures
-  validated; the ZIP reproduced byte-for-byte with SHA-256
-  `722ef2cdda04c67b094549a82f418447d0d1df929907bc1aae63cb5c1f3db164`.
-- Alembic upgraded an empty database, downgraded/re-upgraded, and reported no
-  schema drift. A logical backup restored 41 tables at revision `0002_fts`.
-- The production Compose smoke validated direct origin TLS, strict Host
-  handling, root-owned certificate files, special-character database secrets,
-  non-root API execution, exact S3 settings, worker startup, and loopback-only
-  pgAdmin. The local Compose smoke passed all 14 checks.
-- The final local four-scenario k6 smoke completed 65 requests with zero failed
-  requests, zero backpressure, 250 accepted messages, p50 45.92 ms, and p95
-  90.74 ms.
-- Retired-technology, prohibited-AWS-service, secret, pip-audit, and npm-audit
-  checks passed with zero known dependency vulnerabilities.
-
-The first load run exposed a concurrent first-request workspace insert race.
-The policy service now performs an idempotent PostgreSQL insert and selects the
-canonical row; a two-session regression test covers the race.
-
-GitHub Actions run `31636730931` passed six jobs but the container job found a
-cold-runner defect: the production smoke requested `--pull never` before its
-pinned PostgreSQL and pgAdmin images existed. The smoke now pulls only missing
-third-party images while retaining the already-built local backend image. The
-deprecated Node 20 checkout/upload action majors reported by that run were also
-updated to their current Node 24 releases. A replacement run is pending.
-
-The replacement run `31637210454` confirmed the image pull repair, then exposed
-a Compose-version difference: its global `--wait` rejected the deliberately
-healthcheck-free worker even though that worker was running. The production
-smoke now waits explicitly for healthy API/PostgreSQL/pgAdmin states and a
-running worker, which tests the intended contract without depending on that
-Compose-version behavior. Run `31637848017` then exposed the same global-wait
-assumption in the development Compose smoke. The same explicit service-state
-contract was applied there and passed locally and remotely.
-
-The complete refactor commit `e46127306a2a5eb1f6d396c49f3dec675f0f84d6`
-passed all normal GitHub Actions jobs in green run
-<https://github.com/namanjain221995/Chrome-chatgpt-Data/actions/runs/31638440372>.
-The credentialed real-S3 prefix test remains an explicitly authorized
-`workflow_dispatch` job and was intentionally skipped by the ordinary push.
+To be recorded after the full local gate and the GitHub Actions run complete.
 
 ## External steps still intentionally manual
 
-- Secure and lifecycle-configure the existing S3 bucket.
-- Create/review the prefix-scoped IAM policy and EC2 instance role.
-- Launch and size EC2/EBS, attach the role, allocate the Elastic IP, and create
-  the Cloudflare-source-only port 443 security group.
-- Create SSM parameters and supply identity/compliance secrets.
-- Create the proxied Cloudflare record and Origin CA certificate, then install
-  it for the API container.
+- Create the Cloudflare Tunnel, copy its token into SSM, and route the public
+  hostname to `http://api:8000`.
+- Create the SSM parameters, including `public_base_url`.
+- Confirm the EC2 instance role can reach S3 and Parameter Store.
+- Pin `EC2_SSH_HOST_KEY` as a repository variable after verifying the
+  fingerprint against the EC2 system log.
 - Register the OIDC client and publish the private extension.
-- Complete legal/privacy approvals and the staged pilot before capture gates
-  can change.
+- Complete legal/privacy approvals and the staged pilot before either capture
+  gate changes.

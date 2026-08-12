@@ -13,9 +13,9 @@
 
 ```bash
 curl -s https://archive.example.com/health/ready | jq
-aws ssm start-session --target <instance-id>
+ssh ec2-user@<host>
 cd /opt/techsara-chat-archive
-sudo docker compose -f compose.prod.yaml ps
+sudo docker compose --env-file .env.production -f compose.prod.yaml ps
 sudo docker compose ... logs --tail 100 api worker
 df -h /srv/techsara-chat-archive
 ```
@@ -32,7 +32,7 @@ memory is unreliable and the timeline matters afterwards.
 ```bash
 # 1. Halt capture immediately
 sudo sed -i 's/^KILL_SWITCH_ENABLED=.*/KILL_SWITCH_ENABLED=true/' .env
-sudo docker compose -f compose.prod.yaml up -d api
+sudo docker compose --env-file .env.production -f compose.prod.yaml up -d api
 
 # 2. Revoke the affected sessions
 sudo docker compose ... exec postgres psql -U techsara_app -d techsara_chat_archive -c \
@@ -52,7 +52,7 @@ externally — notification timelines are jurisdiction-specific.
 
 ```bash
 # Do NOT let the next backup overwrite good history
-sudo docker compose -f compose.prod.yaml stop backup
+sudo docker compose --env-file .env.production -f compose.prod.yaml stop backup
 
 # Establish what is actually missing
 sudo docker compose ... exec postgres psql -U techsara_app -d techsara_chat_archive -c \
@@ -136,7 +136,7 @@ sudo docker compose ... exec postgres psql -U techsara_app -d techsara_chat_arch
 iostat -x 5 3
 ```
 
-Match against the thresholds in [SCALING_250_USERS.md](SCALING_250_USERS.md).
+Match against the thresholds in [CAPACITY.md](CAPACITY.md).
 
 ## SEV3: disk filling
 

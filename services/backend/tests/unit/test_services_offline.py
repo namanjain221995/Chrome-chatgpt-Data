@@ -384,3 +384,113 @@ class TestEncryptionArguments:
             result = await service.put_bytes("raw/test.json", body, content_type="application/json")
         stubber.assert_no_pending_responses()
         assert result.version_id == "version-1"
+
+
+class TestCachedStorageHealth:
+    """`/health/ready` is polled by Docker, the deploy script and Cloudflare.
+
+    A HeadBucket per probe would be wasteful, and a slow one would block
+    readiness, so the result is memoised and the probe is bounded.
+    """
+
+    class _CountingStorage:
+        def __init__(self, result: bool = True) -> None:
+            self.calls = 0
+            self.result = result
+
+        async def check(self) -> bool:
+            self.calls += 1
+            return self.result
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self):  # type: ignore[no-untyped-def]
+        from app.services import storage as storage_module
+
+        yield
+        storage_module.reset_storage(None)
+
+    async def test_repeat_probes_reuse_the_cached_result(self) -> None:
+        from app.services import storage as storage_module
+
+        fake = self._CountingStorage()
+        storage_module.reset_storage(fake)  # type: ignore[arg-type]
+        settings = Settings(environment="test", s3_health_cache_seconds=60)
+
+        assert await storage_module.check_storage(settings) is True
+        assert await storage_module.check_storage(settings) is True
+        assert await storage_module.check_storage(settings) is True
+        assert fake.calls == 1
+
+    async def test_a_zero_ttl_disables_caching(self) -> None:
+        from app.services import storage as storage_module
+
+        fake = self._CountingStorage()
+        storage_module.reset_storage(fake)  # type: ignore[arg-type]
+        settings = Settings(environment="test", s3_health_cache_seconds=0)
+
+        await storage_module.check_storage(settings)
+        await storage_module.check_storage(settings)
+        assert fake.calls == 2
+
+    async def test_concurrent_probes_collapse_into_one_call(self) -> None:
+        """A burst of readiness checks must not become a burst of HeadBuckets."""
+        import asyncio
+
+        from app.services import storage as storage_module
+
+        fake = self._CountingStorage()
+        storage_module.reset_storage(fake)  # type: ignore[arg-type]
+        settings = Settings(environment="test", s3_health_cache_seconds=60)
+
+        results = await asyncio.gather(*(storage_module.check_storage(settings) for _ in range(10)))
+        assert all(results)
+        assert fake.calls == 1
+
+    async def test_swapping_the_service_invalidates_the_cache(self) -> None:
+        from app.services import storage as storage_module
+
+        reachable = self._CountingStorage(result=True)
+        storage_module.reset_storage(reachable)  # type: ignore[arg-type]
+        settings = Settings(environment="test", s3_health_cache_seconds=60)
+        assert await storage_module.check_storage(settings) is True
+
+        unreachable = self._CountingStorage(result=False)
+        storage_module.reset_storage(unreachable)  # type: ignore[arg-type]
+        assert await storage_module.check_storage(settings) is False
+
+    async def test_an_unreachable_bucket_reports_false_rather_than_raising(self) -> None:
+        from app.services.storage import StorageService
+
+        settings = Settings(
+            environment="test",
+            s3_bucket="bucket-that-does-not-exist",
+            s3_health_timeout_seconds=1.0,
+        )
+        service = StorageService(settings)
+
+        class _Boom:
+            def head_bucket(self, **_: object) -> None:
+                raise RuntimeError("network is unreachable")
+
+        # Inject the probe client directly: no network, no credential chain.
+        service._health_client = _Boom()
+        assert await service.check() is False
+
+    def test_the_probe_client_fails_fast_instead_of_retrying(self) -> None:
+        """The data-path client retries five times over 60s; a probe must not.
+
+        Only the configuration is built here. Instantiating a real boto3 client
+        would resolve the credential chain, and a unit test must not reach for
+        the instance metadata service.
+        """
+        from app.services.storage import StorageService
+
+        service = StorageService(Settings(environment="test"))
+        probe = service.probe_config()
+        data_path = service.data_path_config()
+
+        assert probe.retries["max_attempts"] == 1
+        assert probe.connect_timeout <= 5
+        assert probe.read_timeout <= 5
+        assert data_path.retries["max_attempts"] > probe.retries["max_attempts"]
+        assert data_path.read_timeout > probe.read_timeout

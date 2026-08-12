@@ -10,15 +10,32 @@ stopped when nobody is using it.
 
 ## Reaching it
 
+Before the first use, make sure both `/techsara-chat-archive/pgadmin_email`
+and `/techsara-chat-archive/pgadmin_password` exist in SSM and re-run
+`sudo ./scripts/fetch_ssm_secrets.sh`. They are optional parameters, so a
+deployment succeeds without them and pgAdmin will refuse to start until they
+are set.
+
 ### 1. Start it
 
 ```bash
-aws ssm start-session --target <instance-id>
+ssh ec2-user@<host>
 cd /opt/techsara-chat-archive
-sudo docker compose -f compose.prod.yaml --profile admin up -d pgadmin
+sudo docker compose --env-file .env.production -f compose.prod.yaml \
+  --profile admin up -d pgadmin
 ```
 
 ### 2. Forward the port from your workstation
+
+```bash
+ssh -N -L 5050:127.0.0.1:5050 ec2-user@<host>
+```
+
+Nothing is opened on the instance's public interface: pgAdmin is bound to
+`127.0.0.1:5050` there, and the forward exists only inside your SSH session.
+
+If SSH is unavailable, Session Manager port forwarding is the break-glass
+alternative:
 
 ```bash
 aws ssm start-session \
@@ -27,8 +44,6 @@ aws ssm start-session \
   --parameters '{"portNumber":["5050"],"localPortNumber":["5050"]}' \
   --region us-east-1
 ```
-
-The instance ID comes from the EC2 Console or `aws ec2 describe-instances`.
 
 ### 3. Open it
 
@@ -55,15 +70,21 @@ aws ssm get-parameter --name /techsara-chat-archive/pgadmin_password \
 ### 5. Stop it when you are done
 
 ```bash
-sudo docker compose -f compose.prod.yaml --profile admin stop pgadmin
+sudo docker compose --env-file .env.production -f compose.prod.yaml \
+  --profile admin stop pgadmin
 ```
+
+`scripts/verify_production.sh` reports a warning while pgAdmin is running, so a
+forgotten session shows up in the next deployment's summary.
 
 Leaving it running consumes ~300 MiB and widens the attack surface for no
 benefit.
 
 ## Rules
 
-1. **Never** publish port 5050 on `0.0.0.0` or route public traffic to pgAdmin.
+1. **Never** publish port 5050 on `0.0.0.0`, and never add pgAdmin as a
+   Cloudflare Tunnel public hostname. `scripts/verify_production_config.sh`
+   fails the build if the binding stops being loopback-only.
 2. Prefer read-only queries. Data changes belong in a migration or a script that
    can be reviewed and repeated.
 3. Anything you do here is outside the application's audit trail. For anything
@@ -114,6 +135,6 @@ SELECT created_at, actor_email, action, resource_type, outcome
 `psql` inside the container is often faster and leaves less running:
 
 ```bash
-sudo docker compose -f compose.prod.yaml exec postgres \
+sudo docker compose --env-file .env.production -f compose.prod.yaml exec postgres \
   psql -U techsara_app -d techsara_chat_archive
 ```

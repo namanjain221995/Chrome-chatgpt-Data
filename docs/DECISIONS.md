@@ -196,3 +196,85 @@ until they are supplied.
 **Cost.** Enabling company-wide coverage requires a documented API contract from
 the Enterprise agreement. That is the correct dependency: the alternative is
 guessing at an API and shipping something that silently does not work.
+
+---
+
+## ADR-011: Cloudflare Tunnel as the only public ingress
+
+**Status:** accepted, supersedes the earlier direct-origin-TLS design.
+
+**Context.** The archive must be reachable by ~250 managed browsers over HTTPS.
+The previous design published FastAPI on port 443 with a Cloudflare Origin CA
+certificate mounted into the container, and restricted the security group to
+Cloudflare's published ranges.
+
+**Decision.** Run a named Cloudflare Tunnel in a `cloudflared` container and
+route the public hostname to `http://api:8000` over a private Docker network.
+FastAPI uses `expose: 8000` and publishes nothing.
+
+**Consequences.**
+
+- No inbound application port exists, so Cloudflare's IP ranges no longer have
+  to be tracked and the security group needs no application rule.
+- No origin certificate or private key exists on the instance: one fewer secret
+  to install, protect, monitor and rotate.
+- `cloudflared` becomes a dependency in the request path. It is pinned by tag
+  and digest, runs `--no-autoupdate`, restarts automatically, and exposes a real
+  readiness endpoint that the deployment and `verify_production.sh` both check.
+- The tunnel is placed on the `egress` network only, so it can reach the API and
+  the internet but not PostgreSQL.
+- The tunnel token is a credential. It is stored as an SSM SecureString and
+  delivered through a root-owned `env_file`, never on the command line where
+  `docker inspect` and `ps` would expose it.
+
+---
+
+## ADR-012: Deploy over SSH, not through AWS Systems Manager
+
+**Status:** accepted, supersedes the earlier SSM `SendCommand` design.
+
+**Context.** GitHub Actions must deploy to one EC2 instance. The previous design
+used GitHub OIDC to assume an AWS role and issue `ssm SendCommand`.
+
+**Decision.** GitHub Actions connects over SSH with a dedicated key and runs
+`scripts/deploy_production.sh <sha>` under `sudo`.
+
+**Consequences.**
+
+- No AWS credential or federation exists in GitHub. No workflow requests
+  `id-token`; the deployment needs exactly four repository secrets.
+- SSH host-key verification becomes our responsibility.
+  `StrictHostKeyChecking` is always `yes`; the host key is pinned through the
+  `EC2_SSH_HOST_KEY` repository variable, and when it is absent the key is
+  learned once and reported with a warning and its fingerprint.
+- Deployment output streams back into the workflow log directly, which is
+  simpler to debug than polling `GetCommandInvocation`.
+- Port 22 must be reachable from GitHub's runners, so it is restricted to a
+  controlled source range or a bastion. Session Manager remains available as a
+  break-glass path.
+
+---
+
+## ADR-013: Build the image on the instance instead of using a registry
+
+**Status:** accepted.
+
+**Context.** The deployment already places the exact commit on the instance, and
+a registry would add a credential to store, rotate and keep out of logs.
+
+**Decision.** Build `techsara-chat-archive-backend:<full-git-sha>` on the EC2
+host with `docker compose build api`. Publish no container image anywhere.
+
+**Consequences.**
+
+- One fewer credential on the instance and in CI.
+- Immutability is preserved through the SHA tag; `latest` is never deployed and
+  `verify_production_config.sh` fails any floating tag.
+- Rollback is fast because deployments prune only dangling layers, leaving the
+  previous SHA-tagged image on the host.
+- The deployed artifact is reproduced from source rather than being byte
+  identical to a CI artifact. CI builds the same Dockerfile on every run, so a
+  build break is caught before deployment. The artifact that leaves the
+  building — the extension ZIP — *is* byte-reproducible and checksummed.
+- If a second instance is ever added, publish to GHCR from CI and change the
+  `image:` line plus `pull_policy`. Nothing else in the flow changes.

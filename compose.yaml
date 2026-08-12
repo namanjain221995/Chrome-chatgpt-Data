@@ -45,7 +45,7 @@ x-app-service: &app-service
     dockerfile: Dockerfile
     args:
       GIT_SHA: ${GIT_SHA:-dev}
-  image: ${IMAGE_REPOSITORY:-techsara/chat-archive-backend}:${IMAGE_TAG:-local}
+  image: ${IMAGE_NAME:-techsara-chat-archive-backend}:${IMAGE_TAG:-local}
   environment: *app-env
   networks: [backend, egress]
   logging: *default-logging

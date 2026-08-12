@@ -138,9 +138,9 @@ aws iam list-attached-role-policies --role-name techsara-chat-archive-ec2
 
 Expected: trust principal `ec2.amazonaws.com` and both attached policies.
 
-## 5. Launch Ubuntu 24.04 LTS x86_64 on `t3a.large`
+## 5. Launch Amazon Linux 2023 x86_64 on `t3a.large`
 
-EC2 → Launch instance. Select Canonical Ubuntu Server 24.04 LTS x86_64,
+EC2 → Launch instance. Select Amazon Linux 2023 AMI x86_64,
 `t3a.large`, a public subnet, and **Proceed without a key pair**. Set metadata
 options to IMDSv2 required and hop limit 1. Tag `Name=techsara-chat-archive`.
 
@@ -204,16 +204,30 @@ Check both IPv4 and IPv6. From an external approved scanner, confirm direct
 origin access is blocked. Roll back any rule that exposes a private port
 immediately.
 
-## 11. Connect through AWS Systems Manager Session Manager
+## 11. Connect over SSH (Session Manager as break-glass)
 
-Systems Manager → Fleet Manager must show the node Online. EC2 → Connect →
-Session Manager → Connect, or:
+Deployment and day-to-day administration use SSH as `ec2-user`, because
+GitHub Actions deploys over SSH:
+
+```bash
+ssh ec2-user@<instance-host>
+```
+
+Before trusting that session, compare the host-key fingerprint the client shows
+against the one EC2 wrote to the instance's system log (EC2 → Instance →
+Monitor and troubleshoot → Get system log). Pin the same key as the
+`EC2_SSH_HOST_KEY` repository variable; see
+[GITHUB_SECRETS.md](GITHUB_SECRETS.md).
+
+Systems Manager Session Manager remains available as a break-glass path when
+SSH is unavailable, and requires no inbound port:
 
 ```bash
 aws ssm start-session --target <instance-id> --region us-east-1
 ```
 
-Expected: an `ssm-user` shell without an inbound management port.
+Expected: a shell on the instance. Restrict the security group's port 22 rule
+to a controlled source range or a bastion.
 
 ## 12. Format and mount the data EBS volume safely and idempotently
 
@@ -288,41 +302,54 @@ sudo stat -c '%a %U:%G %n' /srv/techsara-chat-archive/secrets/*
 Expected: secret files are root-owned `440` with only the consuming service's
 numeric group, the directory is root-owned `750`, and `.env` is `600`.
 
-## 17. Configure Cloudflare proxied DNS and Origin CA
+## 17. Create the Cloudflare Tunnel and store its token
 
-Follow [CLOUDFLARE_DNS_AND_TLS.md](CLOUDFLARE_DNS_AND_TLS.md): create the proxied
-A record and create a certificate for the exact hostname. DNS-only mode does
-not supply Full (strict) or the trusted client-address header. Never store the
-private key in SSM, Git, Compose, or a ticket.
+Follow [CLOUDFLARE_TUNNEL_SETUP.md](CLOUDFLARE_TUNNEL_SETUP.md): create the named
+tunnel `techsara-chatgpt-production`, copy its token into
+`/techsara-chat-archive/cloudflare_tunnel_token` as a SecureString, and add the
+public hostname routed to `http://api:8000`.
 
-## 18. Install and validate direct API TLS
+There is no origin certificate and no origin private key in this architecture.
+Cloudflare terminates TLS at the edge, and the tunnel carries traffic to the
+instance over an outbound-only connection.
 
 ```bash
-sudo ./scripts/install_origin_tls.sh \
-  --cert-file /root/origin-input.pem --key-file /root/origin-input.key
-sudo stat -c '%a %U:%G %n' /srv/techsara-chat-archive/tls/*
+sudo ./scripts/fetch_ssm_secrets.sh
+sudo stat -c '%a %U:%G %n' /srv/techsara-chat-archive/secrets/cloudflared.env
 ```
 
-Set Cloudflare SSL/TLS mode Full (strict) and enable its edge HTTPS redirect.
-Expected after the API starts: origin certificate validation succeeds;
-unexpected Host headers are rejected by the application.
+Expected: `400 root:root`. The token is never passed on a command line, so it
+never appears in `docker inspect`, `ps` output or container logs.
+
+## 18. Confirm no application port is exposed
+
+```bash
+sudo ss -lntp
+```
+
+Expected: nothing listening on `0.0.0.0:8000`, `0.0.0.0:5432` or
+`0.0.0.0:5050`. The security group needs no inbound application rule at all;
+only your SSH access rule (see step 10) and, optionally, nothing else.
 
 ## 19. Start PostgreSQL
 
 ```bash
 cd /opt/techsara-chat-archive
-sudo docker compose -f compose.prod.yaml pull postgres
-sudo docker compose -f compose.prod.yaml up -d postgres
-sudo docker compose -f compose.prod.yaml exec -T postgres pg_isready
+sudo docker compose --env-file .env.production -f compose.prod.yaml pull postgres
+sudo docker compose --env-file .env.production -f compose.prod.yaml up -d postgres
+sudo docker compose --env-file .env.production -f compose.prod.yaml exec -T postgres pg_isready
 ```
 
 ## 20. Run Alembic migrations
 
 ```bash
-sudo docker compose -f compose.prod.yaml run --rm migrate
-sudo docker compose -f compose.prod.yaml exec -T postgres \
+sudo docker compose --env-file .env.production -f compose.prod.yaml run --rm migrate
+sudo docker compose --env-file .env.production -f compose.prod.yaml exec -T postgres \
   psql -U techsara_app -d techsara_chat_archive -c 'select * from alembic_version;'
 ```
+
+`scripts/deploy_production.sh` performs both of these steps; run them by hand
+only when bringing the very first instance up step by step.
 
 On migration failure, do not start the API. Preserve logs and restore the
 pre-change backup into a new database; never improvise a destructive downgrade.
@@ -330,23 +357,26 @@ pre-change backup into a new database; never improvise a destructive downgrade.
 ## 21. Start API, worker, backup, and optional poller
 
 ```bash
-sudo ./scripts/deploy_ec2.sh
-sudo docker compose -f compose.prod.yaml ps
-# Only after OpenAI authorization and configuration:
-sudo docker compose -f compose.prod.yaml --profile compliance up -d compliance-poller
+sudo ./scripts/deploy_production.sh "$(git rev-parse origin/main)"
+sudo docker compose --env-file .env.production -f compose.prod.yaml ps
 ```
+
+The deployment starts `api`, `worker`, `backup` and `cloudflared`. It starts the
+compliance poller only when `compliance_poll_enabled` is `true` in SSM, and
+never starts pgAdmin.
 
 ## 22. Verify health, S3, database, and background jobs
 
 ```bash
-sudo ./scripts/verify_deployment.sh
-sudo docker compose -f compose.prod.yaml logs --tail 100 api worker backup
+sudo ./scripts/verify_production.sh
+sudo docker compose --env-file .env.production -f compose.prod.yaml \
+  logs --tail 100 api worker cloudflared backup
 sudo ss -lntp
 ```
 
-Expected: public health is OK; role identity resolves; `HeadBucket` succeeds;
-database is ready; only TLS port 443 is public; jobs transition without logging
-content.
+Expected: public health is OK through the tunnel; the instance role identity
+resolves; `HeadBucket` succeeds; the database is ready; no application port is
+public; jobs transition without logging content.
 
 ## 23. Build and configure the extension
 
@@ -370,7 +400,7 @@ The `backup` service runs every 24 hours and uploads dump + manifest under
 disabled. Weekly:
 
 ```bash
-sudo docker compose -f compose.prod.yaml exec -T backup \
+sudo docker compose --env-file .env.production -f compose.prod.yaml exec -T backup \
   /bin/sh /opt/scripts/verify_backup.sh --full-restore
 ```
 
@@ -381,16 +411,18 @@ Record size, checksum, age, restored row counts, revision, operator, and ticket.
 Install/configure the CloudWatch Agent manually or use the approved host agent.
 Alert on EC2 status, CPU sustained above 80%, memory/swap pressure, data volume
 above 80/90%, PostgreSQL container restarts, readiness failures, queue age,
-archive job failures, backup older than 30 hours, and certificate expiry. Test
+archive job failures, backup older than 30 hours, and tunnel disconnection. Test
 the notification route. Monitoring must not ship prompts, responses, tokens,
 authorization headers, cookies, or presigned URLs.
 
 ## Deployment rollback summary
 
-Application failure: set the preceding immutable `IMAGE_TAG` in SSM and rerun
-`scripts/deploy_ec2.sh`. Database failure: restore the last verified dump into a
-new database and switch only after validation. Edge failure: restore the prior
-root-owned certificate pair and restart the API container. Instance failure:
+Application failure: `sudo ./scripts/rollback_production.sh <previous-sha>`, or
+let a failed deployment roll back automatically; see [ROLLBACK.md](ROLLBACK.md).
+Database failure: restore the last verified dump into a new database and switch
+only after validation. Edge failure: check the tunnel in the Cloudflare
+dashboard and `curl -fsS http://127.0.0.1:2000/ready` on the instance.
+Instance failure:
 launch a replacement in the same AZ or attach the preserved data volume to a
 reviewed replacement, then repeat steps 7–22. Capture gates remain false during
 every rollback.

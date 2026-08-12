@@ -1,109 +1,158 @@
-name: Deploy to EC2
+name: Deploy to production
 
+# main is the only branch that deploys, and only after the full CI suite has
+# passed for the exact commit being deployed. Pull requests never reach this
+# workflow, so a fork can never obtain a deployment secret.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
-      image_tag:
-        description: Image tag (git SHA) to deploy
-        required: true
-      instance_id:
-        description: Target EC2 instance id
-        required: true
-      environment:
-        description: Deployment environment
-        required: true
-        default: production
-        type: choice
-        options: [production, staging]
+      sha:
+        description: Full 40-character commit SHA to deploy (defaults to HEAD of main)
+        required: false
+        type: string
+
+# Never cancel a deployment in flight: it could interrupt a migration or leave
+# containers half recreated. A second push queues behind the first instead.
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
 
 permissions:
   contents: read
-  id-token: write # OIDC federation; no long-lived AWS key is stored
 
 jobs:
+  # Full validation of this exact commit. Deployment depends on it, so a red
+  # test suite blocks the release rather than being reported after the fact.
+  validate:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   deploy:
-    name: Deploy ${{ inputs.image_tag }} to ${{ inputs.instance_id }}
+    name: Deploy over SSH
+    needs: validate
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
-    timeout-minutes: 30
+    timeout-minutes: 45
+    environment: production
 
     steps:
       - uses: actions/checkout@v7
 
-      - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Resolve the deployment commit
+        id: target
+        env:
+          REQUESTED_SHA: ${{ inputs.sha }}
+          PUSHED_SHA: ${{ github.sha }}
+        run: |
+          set -Eeuo pipefail
+          sha="${REQUESTED_SHA:-${PUSHED_SHA}}"
+          if [[ ! "${sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::'${sha}' is not a full 40-character commit SHA" >&2
+            exit 1
+          fi
+          # A dispatched SHA must actually be an ancestor of main: this is what
+          # stops an arbitrary commit from being deployed by hand.
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor "${sha}" origin/main; then
+            echo "::error::${sha} is not on origin/main" >&2
+            exit 1
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "short=${sha:0:12}" >> "$GITHUB_OUTPUT"
+          echo "deploying ${sha}"
+
+      - name: Configure SSH
+        uses: ./.github/actions/ec2-ssh
         with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          host: ${{ secrets.EC2_HOST }}
+          user: ${{ secrets.EC2_USER }}
+          port: ${{ secrets.EC2_SSH_PORT }}
+          private-key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          host-key: ${{ vars.EC2_SSH_HOST_KEY || secrets.EC2_SSH_HOST_KEY }}
 
-      - name: Confirm the image exists before touching the instance
+      - name: Preflight the instance
         run: |
-          echo "deploying tag ${{ inputs.image_tag }}"
-          test -n "${{ inputs.image_tag }}"
+          set -Eeuo pipefail
+          ssh ec2 'bash -Eeuo pipefail -s' <<'REMOTE'
+          app_dir=/opt/techsara-chat-archive
+          [ -d "${app_dir}/.git" ] || { echo "::error::${app_dir} is not a git checkout"; exit 1; }
+          sudo -n true 2>/dev/null || { echo "::error::deployment user needs passwordless sudo"; exit 1; }
+          docker info >/dev/null 2>&1 || sudo docker info >/dev/null 2>&1 \
+            || { echo "::error::Docker is not usable"; exit 1; }
+          echo "preflight passed on $(hostname)"
+          REMOTE
 
-      # SSM Run Command rather than SSH: no inbound port, and every invocation
-      # is recorded in CloudTrail with the identity that ran it.
-      - name: Deploy through SSM Run Command
+      - name: Deploy
         id: deploy
+        env:
+          DEPLOY_SHA: ${{ steps.target.outputs.sha }}
+          ACTOR: ${{ github.actor }}
         run: |
-          command="cd /opt/techsara-chat-archive && sudo IMAGE_TAG=${{ inputs.image_tag }} ./scripts/deploy_ec2.sh"
-          parameters="$(jq -cn --arg command "$command" '{commands:[$command]}')"
-          command_id="$(aws ssm send-command \
-            --document-name "AWS-RunShellScript" \
-            --targets "Key=instanceids,Values=${{ inputs.instance_id }}" \
-            --parameters "$parameters" \
-            --comment "Deploy ${{ inputs.image_tag }} by ${{ github.actor }}" \
-            --query 'Command.CommandId' --output text)"
-          echo "command_id=${command_id}" >> "$GITHUB_OUTPUT"
-          echo "SSM command: ${command_id}"
+          set -Eeuo pipefail
+          # Reduced to a safe character set before it is interpolated into the
+          # remote script; the SHA was already validated as 40 hex characters.
+          safe_actor="$(printf '%s' "${ACTOR}" | tr -cd 'A-Za-z0-9._-' | head -c 64)"
 
-          for _ in $(seq 1 60); do
-            status="$(aws ssm get-command-invocation \
-              --command-id "${command_id}" \
-              --instance-id "${{ inputs.instance_id }}" \
-              --query 'Status' --output text 2>/dev/null || echo Pending)"
-            echo "status: ${status}"
-            case "${status}" in
-              Success) exit 0 ;;
-              Failed|Cancelled|TimedOut)
-                aws ssm get-command-invocation \
-                  --command-id "${command_id}" \
-                  --instance-id "${{ inputs.instance_id }}" \
-                  --query 'StandardErrorContent' --output text
-                exit 1 ;;
-            esac
-            sleep 15
-          done
-          echo "deployment did not finish within the timeout" >&2
-          exit 1
+          # The script does the work on the instance: it takes the deployment
+          # lock, records the rollback target, renders configuration from SSM,
+          # migrates, recreates services, health-checks and rolls back on
+          # failure. Nothing secret crosses this connection.
+          #
+          # The here-document delimiter is deliberately unquoted: both values
+          # must be substituted here, by the runner, because the instance has no
+          # idea which commit was pushed. Both are constrained above.
+          # shellcheck disable=SC2087
+          ssh ec2 'sudo bash -Eeuo pipefail -s' <<REMOTE
+          export DEPLOY_ACTOR='${safe_actor}'
+          exec /opt/techsara-chat-archive/scripts/deploy_production.sh '${DEPLOY_SHA}'
+          REMOTE
 
-      - name: Verify the public health endpoint
+      - name: Verify the deployed host
+        if: success()
         run: |
-          url="${{ vars.PUBLIC_BASE_URL }}/health/ready"
-          for _ in $(seq 1 20); do
-            if curl -fsS "$url" | grep -q '"status":"ok"'; then
-              echo "health check passed"
-              exit 0
-            fi
-            sleep 10
-          done
-          echo "post-deploy health check failed" >&2
-          exit 1
+          set -Eeuo pipefail
+          ssh ec2 'sudo /opt/techsara-chat-archive/scripts/verify_production.sh' | tee /tmp/verify.txt
+
+      - name: Read back the recorded release
+        if: always()
+        id: release
+        run: |
+          set -Eeuo pipefail
+          ssh ec2 'cat /opt/techsara-chat-archive/deploy/current-release 2>/dev/null || true' \
+            > /tmp/current-release.txt || true
+          cat /tmp/current-release.txt || true
 
       - name: Deployment summary
         if: always()
+        env:
+          DEPLOY_SHA: ${{ steps.target.outputs.sha }}
+          RESULT: ${{ steps.deploy.outcome }}
         run: |
           {
-            echo "## Deployment"
-            echo ""
+            echo "## Production deployment"
+            echo
             echo "| Field | Value |"
             echo "| --- | --- |"
-            echo "| Image tag | \`${{ inputs.image_tag }}\` |"
-            echo "| Instance | \`${{ inputs.instance_id }}\` |"
-            echo "| Environment | ${{ inputs.environment }} |"
-            echo "| SSM command | \`${{ steps.deploy.outputs.command_id }}\` |"
-            echo "| Actor | ${{ github.actor }} |"
-            echo ""
-            echo "Application images roll back automatically on a failed health check."
-            echo "Database migrations are NOT rolled back: see docs/PRODUCTION_DEPLOYMENT.md."
+            echo "| Requested commit | \`${DEPLOY_SHA}\` |"
+            echo "| Deploy step | ${RESULT} |"
+            echo "| Triggered by | ${{ github.actor }} |"
+            echo "| Event | ${{ github.event_name }} |"
+            echo
+            echo "### Recorded release on the instance"
+            echo '```'
+            cat /tmp/current-release.txt 2>/dev/null || echo "unavailable"
+            echo '```'
+            if [ -s /tmp/verify.txt ]; then
+              echo
+              echo "### Host verification"
+              echo '```'
+              cat /tmp/verify.txt
+              echo '```'
+            fi
+            echo
+            echo "Application images roll back automatically when a health check fails."
+            echo "Database migrations are never reversed automatically: see docs/ROLLBACK.md."
           } >> "$GITHUB_STEP_SUMMARY"

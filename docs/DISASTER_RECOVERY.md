@@ -17,8 +17,8 @@ Configurable goals, not guarantees:
 Compose restarts it (`restart: unless-stopped`). If it crash-loops:
 
 ```bash
-sudo docker compose -f compose.prod.yaml logs --tail 100 <service>
-sudo docker compose -f compose.prod.yaml up -d --force-recreate <service>
+sudo docker compose --env-file .env.production -f compose.prod.yaml logs --tail 100 <service>
+sudo docker compose --env-file .env.production -f compose.prod.yaml up -d --force-recreate <service>
 ```
 
 No data loss: the queue is in PostgreSQL and client work is in IndexedDB.
@@ -43,9 +43,9 @@ Extensions flush their queued items on reconnect. Nothing is lost.
 # preserved encrypted data volume without formatting it.
 
 # 2. Deploy onto the new instance
-aws ssm start-session --target <new-instance-id>
+ssh ec2-user@<new-instance-host>
 cd /opt/techsara-chat-archive
-sudo IMAGE_TAG=<sha> ./scripts/deploy_ec2.sh
+sudo ./scripts/deploy_production.sh <full-40-char-sha>
 ```
 
 The volume mounts by filesystem UUID, so PostgreSQL finds its data where it left
@@ -59,14 +59,14 @@ it. Verify row counts against the last known values before announcing recovery.
 # 1. Rebuild the host from docs/AWS_MANUAL_SETUP.md
 
 # 2. Secrets are already in SSM; deploy the application
-aws ssm start-session --target <new-instance-id>
+ssh ec2-user@<new-instance-host>
 cd /opt/techsara-chat-archive
-sudo IMAGE_TAG=<sha> ./scripts/deploy_ec2.sh
+sudo ./scripts/deploy_production.sh <full-40-char-sha>
 
 # 3. Restore the newest backup
-sudo docker compose -f compose.prod.yaml stop api worker compliance-poller
+sudo docker compose --env-file .env.production -f compose.prod.yaml stop api worker
 aws s3 ls s3://techsara-chatgpt/backups/postgres/ --recursive --region us-east-1 | tail -5
-sudo docker compose -f compose.prod.yaml exec backup \
+sudo docker compose --env-file .env.production -f compose.prod.yaml exec backup \
   sh /opt/scripts/restore_postgres.sh --from-s3 <key> --target-db techsara_restored
 
 # 4. Verify, then promote
@@ -77,7 +77,7 @@ sudo docker compose ... exec postgres psql -U techsara_app -d postgres \
   -c "ALTER DATABASE techsara_restored RENAME TO techsara_chat_archive;"
 
 # 5. Restart and confirm
-sudo docker compose -f compose.prod.yaml up -d
+sudo docker compose --env-file .env.production -f compose.prod.yaml up -d
 curl -s https://archive.example.com/health/ready
 ```
 
@@ -91,16 +91,16 @@ gap matters.
 
 ```bash
 # Stop writers immediately
-sudo docker compose -f compose.prod.yaml stop api worker compliance-poller
+sudo docker compose --env-file .env.production -f compose.prod.yaml stop api worker
 
-# Restore the pre-migration backup that deploy_ec2.sh took (step 3 of a deploy)
+# Restore the pre-migration backup that deploy_production.sh took
 aws s3 ls "s3://techsara-chatgpt/backups/postgres/$(date -u +%Y/%m/%d)/" --recursive --region us-east-1
 sudo docker compose ... exec backup sh /opt/scripts/restore_postgres.sh \
   --from-s3 <pre-migration-key> --target-db techsara_rollback
 ```
 
 Migrations are not automatically reversible. Restoring the pre-migration backup
-is the supported path, which is exactly why `deploy_ec2.sh` refuses to migrate
+is the supported path, which is exactly why `deploy_production.sh` refuses to migrate
 when that backup fails.
 
 ### 6. The region is unavailable

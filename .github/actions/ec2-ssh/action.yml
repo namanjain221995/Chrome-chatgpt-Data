@@ -1,0 +1,116 @@
+name: Configure EC2 SSH
+description: >-
+  Install the deployment key and a verified known_hosts entry, then expose an
+  `ec2` SSH host alias. Never disables host-key checking and never echoes the
+  private key.
+
+inputs:
+  host:
+    description: EC2 hostname or IP (from the EC2_HOST secret)
+    required: true
+  user:
+    description: SSH user (from the EC2_USER secret)
+    required: true
+  port:
+    description: SSH port (from the EC2_SSH_PORT secret)
+    required: true
+  private-key:
+    description: OpenSSH private key (from the EC2_SSH_PRIVATE_KEY secret)
+    required: true
+  host-key:
+    description: >-
+      Pinned SSH host public key, in known_hosts format or as a bare
+      "ssh-ed25519 AAAA..." line. When empty the key is learned on first use
+      and its fingerprint is reported so it can be pinned afterwards.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install the deployment key and known hosts
+      shell: bash
+      env:
+        # Passed through the environment, never interpolated into the script
+        # body: `${{ }}` expansion would place secret text into the command
+        # line and into any shell trace.
+        SSH_HOST: ${{ inputs.host }}
+        SSH_USER: ${{ inputs.user }}
+        SSH_PORT: ${{ inputs.port }}
+        SSH_PRIVATE_KEY: ${{ inputs.private-key }}
+        SSH_HOST_KEY: ${{ inputs.host-key }}
+      run: |
+        set -Eeuo pipefail
+        set +x
+
+        : "${SSH_HOST:?EC2_HOST is not set}"
+        : "${SSH_USER:?EC2_USER is not set}"
+        : "${SSH_PRIVATE_KEY:?EC2_SSH_PRIVATE_KEY is not set}"
+        port="${SSH_PORT:-22}"
+
+        umask 077
+        mkdir -p ~/.ssh
+
+        printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/techsara_deploy
+        # A trailing blank line is required by OpenSSH; printf added one, but a
+        # key pasted with CRLF endings would still be rejected, so normalise.
+        sed -i 's/\r$//' ~/.ssh/techsara_deploy
+        chmod 600 ~/.ssh/techsara_deploy
+        if ! ssh-keygen -y -f ~/.ssh/techsara_deploy > /dev/null 2>&1; then
+          echo "::error::EC2_SSH_PRIVATE_KEY is not a usable OpenSSH private key" >&2
+          exit 1
+        fi
+
+        if [ -n "${SSH_HOST_KEY}" ]; then
+          # Accept either a full known_hosts line or a bare key type + blob.
+          case "${SSH_HOST_KEY}" in
+            ssh-*|ecdsa-*)
+              if [ "${port}" = "22" ]; then
+                printf '%s %s\n' "${SSH_HOST}" "${SSH_HOST_KEY}" > ~/.ssh/known_hosts
+              else
+                printf '[%s]:%s %s\n' "${SSH_HOST}" "${port}" "${SSH_HOST_KEY}" > ~/.ssh/known_hosts
+              fi
+              ;;
+            *) printf '%s\n' "${SSH_HOST_KEY}" > ~/.ssh/known_hosts ;;
+          esac
+          echo "host key source: pinned (EC2_SSH_HOST_KEY)"
+        else
+          # Trust on first use. This is a real, bounded weakness, so it is
+          # reported loudly with the fingerprint the operator must compare
+          # against the EC2 serial console output before pinning it.
+          ssh-keyscan -T 15 -p "${port}" -t ed25519,rsa,ecdsa "${SSH_HOST}" \
+            > ~/.ssh/known_hosts 2>/dev/null
+          echo "::warning::No EC2_SSH_HOST_KEY is configured, so this run learned the host key on first use. Pin it by following docs/GITHUB_SECRETS.md."
+          echo "host key source: learned this run (not pinned)"
+        fi
+
+        if [ ! -s ~/.ssh/known_hosts ]; then
+          echo "::error::could not establish a host key for the EC2 instance" >&2
+          exit 1
+        fi
+        chmod 600 ~/.ssh/known_hosts
+
+        # Fingerprints are public information and are the thing an operator
+        # compares against the instance itself.
+        echo "known host fingerprints:"
+        ssh-keygen -lf ~/.ssh/known_hosts | sed 's/^/  /'
+
+        cat > ~/.ssh/config <<EOF
+        Host ec2
+          HostName ${SSH_HOST}
+          User ${SSH_USER}
+          Port ${port}
+          IdentityFile ~/.ssh/techsara_deploy
+          IdentitiesOnly yes
+          StrictHostKeyChecking yes
+          UserKnownHostsFile ~/.ssh/known_hosts
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          PubkeyAuthentication yes
+          BatchMode yes
+          ConnectTimeout 15
+          ServerAliveInterval 30
+          ServerAliveCountMax 40
+        EOF
+        chmod 600 ~/.ssh/config
+        echo "SSH host alias 'ec2' is configured"

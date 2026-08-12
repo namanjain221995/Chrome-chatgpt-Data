@@ -315,7 +315,7 @@ export function handleSummary(data) {
     `- backpressure rate: ${metric('archive_backpressure', 'rate')}`,
     `- max queue depth: ${metric('archive_queue_depth', 'max')}`,
     '',
-    'Record alongside this report (see docs/SCALING_250_USERS.md):',
+    'Record alongside this report (see docs/CAPACITY.md):',
     'database connections, CPU, memory, worker queue lag and EBS write latency.',
     '',
   ].join('\n');

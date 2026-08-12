@@ -157,15 +157,17 @@ class StorageService:
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or get_settings()
         self._client: Any | None = None
+        self._health_client: Any | None = None
 
     # -- plumbing ---------------------------------------------------------
     @property
     def bucket(self) -> str:
         return self._settings.s3_bucket
 
-    def _build_client(self) -> Any:
+    def data_path_config(self) -> BotoConfig:
+        """Client configuration for real reads and writes: retry generously."""
         s = self._settings
-        config = BotoConfig(
+        return BotoConfig(
             region_name=s.aws_region,
             signature_version="s3v4",
             s3={"addressing_style": "virtual"},
@@ -173,10 +175,12 @@ class StorageService:
             connect_timeout=10,
             read_timeout=60,
         )
+
+    def _build_client(self) -> Any:
         # Credentials come from the EC2 instance profile in production; boto3
         # resolves and refreshes them automatically. No static key is accepted
         # by application configuration.
-        return boto3.client("s3", config=config)
+        return boto3.client("s3", config=self.data_path_config())
 
     @property
     def client(self) -> Any:
@@ -371,10 +375,42 @@ class StorageService:
         return str(url)
 
     # -- health -----------------------------------------------------------
+    def probe_config(self) -> BotoConfig:
+        """Client configuration for health probes: fail fast instead of retrying.
+
+        The data-path client allows six attempts with a 60 s read timeout, which
+        is right for an upload and completely wrong for a readiness probe that
+        Docker and the deployment script are waiting on. This one allows two
+        attempts with short timeouts, and `check()` bounds the whole thing with
+        `s3_health_timeout_seconds` regardless.
+        """
+        s = self._settings
+        return BotoConfig(
+            region_name=s.aws_region,
+            signature_version="s3v4",
+            s3={"addressing_style": "virtual"},
+            retries={"max_attempts": 1, "mode": "standard"},
+            connect_timeout=2,
+            read_timeout=3,
+        )
+
+    def _build_health_client(self) -> Any:
+        return boto3.client("s3", config=self.probe_config())
+
+    @property
+    def health_client(self) -> Any:
+        if self._health_client is None:
+            self._health_client = self._build_health_client()
+        return self._health_client
+
     async def check(self) -> bool:
         try:
-            await asyncio.to_thread(lambda: self.client.head_bucket(Bucket=self.bucket))
+            async with asyncio.timeout(self._settings.s3_health_timeout_seconds):
+                await asyncio.to_thread(lambda: self.health_client.head_bucket(Bucket=self.bucket))
             return True
+        except TimeoutError:
+            logger.warning("s3_check_timeout", bucket=self.bucket)
+            return False
         except Exception as exc:
             logger.warning("s3_check_failed", error_type=type(exc).__name__)
             return False
@@ -393,3 +429,44 @@ def get_storage() -> StorageService:
 def reset_storage(service: StorageService | None = None) -> None:
     global _storage
     _storage = service
+    reset_storage_health_cache()
+
+
+# ---------------------------------------------------------------------------
+# Cached reachability probe
+# ---------------------------------------------------------------------------
+
+#: HeadBucket is cheap but it is still a network round trip, and readiness is
+#: polled by Docker, by the deployment script and by Cloudflare. The result is
+#: therefore memoised for `S3_HEALTH_CACHE_SECONDS`, and a lock keeps a burst of
+#: concurrent probes down to one call.
+_health_lock = asyncio.Lock()
+_health_result: bool | None = None
+_health_checked_at: float = 0.0
+
+
+def reset_storage_health_cache() -> None:
+    global _health_result, _health_checked_at
+    _health_result = None
+    _health_checked_at = 0.0
+
+
+async def check_storage(settings: Settings | None = None) -> bool:
+    """Return the cached object-store reachability, refreshing when stale."""
+    global _health_result, _health_checked_at
+    settings = settings or get_settings()
+    ttl = settings.s3_health_cache_seconds
+    now = asyncio.get_running_loop().time()
+
+    if _health_result is not None and ttl > 0 and (now - _health_checked_at) < ttl:
+        return _health_result
+
+    async with _health_lock:
+        # Another probe may have refreshed the value while this one waited.
+        now = asyncio.get_running_loop().time()
+        if _health_result is not None and ttl > 0 and (now - _health_checked_at) < ttl:
+            return _health_result
+        result = await get_storage().check()
+        _health_result = result
+        _health_checked_at = now
+        return result

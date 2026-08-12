@@ -1,15 +1,61 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Local backup/restore proof.
+# Backup/restore proof.
 #
-# Backs up the running development database, restores it into a brand-new
-# database, and compares row counts. This is the check that turns "we take
-# backups" into "we have restored one today".
+#   scripts/test_restore.sh                 local: dump the dev database and
+#                                           restore it into a fresh database
+#   scripts/test_restore.sh --from-s3-latest  production host: restore the most
+#                                           recent S3 backup into a throwaway
+#                                           database and drop it again
+#
+# This is the check that turns "we take backups" into "we have restored one
+# today". Neither mode ever writes to the live database: the restore target is
+# always a new database name, and the S3 mode uses restore_postgres.sh
+# --verify-only, which refuses to touch the production database.
 # =============================================================================
-set -euo pipefail
+set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
+
+MODE=local
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --local) MODE=local; shift ;;
+    --from-s3-latest) MODE=s3; shift ;;
+    --help|-h)
+      sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      exit 0 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [ "${MODE}" = "s3" ]; then
+  # Runs on the EC2 host, inside the backup container, which already has the
+  # instance role, pg_restore and the .pgpass file.
+  PROJECT_NAME="${PROJECT_NAME:-techsara-chat-archive}"
+  APP_DIR="${APP_DIR:-/opt/${PROJECT_NAME}}"
+  ENV_FILE="${ENV_FILE:-${APP_DIR}/.env.production}"
+  [ -f "${ENV_FILE}" ] || { echo "${ENV_FILE} not found" >&2; exit 1; }
+  cd "${APP_DIR}"
+
+  bucket="$(sed -n 's/^S3_BUCKET=//p' "${ENV_FILE}" | tail -1)"
+  region="$(sed -n 's/^AWS_REGION=//p' "${ENV_FILE}" | tail -1)"
+  echo "==> finding the most recent backup in s3://${bucket}/backups/postgres/"
+  latest="$(aws s3 ls "s3://${bucket}/backups/postgres/" --recursive --region "${region}" \
+    | sort -k1,2 | tail -1 | awk '{print $4}')"
+  [ -n "${latest}" ] || { echo "no backup objects found" >&2; exit 1; }
+  echo "    ${latest}"
+
+  echo "==> restoring into a throwaway database and dropping it again"
+  docker compose --env-file "${ENV_FILE}" -f compose.prod.yaml run --rm --no-deps \
+    --entrypoint /bin/sh backup -c \
+    "cp \"\$PGPASS_SOURCE_FILE\" \"\$PGPASSFILE\"; chmod 0600 \"\$PGPASSFILE\";
+     exec sh /opt/scripts/restore_postgres.sh --from-s3 '${latest}' \
+       --target-db techsara_restore_test --drop-existing --verify-only"
+  echo "S3 restore verification passed for ${latest}"
+  exit 0
+fi
 
 CONTAINER="${TEST_PG_CONTAINER:-techsara-test-pg}"
 DB="${POSTGRES_DB:-techsara_chat_archive}"

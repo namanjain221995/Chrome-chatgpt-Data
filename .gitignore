@@ -33,6 +33,11 @@ apps/chrome-extension/.vite/
 # --- Build artifacts ---
 artifacts/
 /tmp/
+apps/chrome-extension.zip
+
+# --- Deployment state written on the EC2 host ---
+deploy/current-release
+deploy/previous-release
 
 # --- Local data volumes ---
 .data/

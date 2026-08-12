@@ -86,6 +86,18 @@ jsdom plus sanitized fixtures. **No test ever contacts a live ChatGPT account.**
   classification; the backend token never reaching a storage host; diagnostics
   redaction
 
+## Deployment and topology checks
+
+| Check | What it proves |
+| --- | --- |
+| `scripts/verify_production_config.sh` | Statically, from `docker compose config`: FastAPI exposes 8000 and publishes nothing, PostgreSQL publishes nothing, pgAdmin is loopback-only behind the `admin` profile, the tunnel image is digest-pinned with `--no-autoupdate` and no `--token` on the command line, the tunnel cannot reach PostgreSQL, no service uses a floating tag or a static AWS key, the capture gates are false, and the connection-pool budget fits inside `max_connections`. It also fails any service that publishes a port while attached only to internal networks — Docker accepts that binding and then silently never creates it. |
+| `tests/integration/production_compose_smoke_test.sh` | The same contract at runtime, by inspecting real container port bindings, plus file-based secrets, a special-character database password, non-root execution, the backup role's `.pgpass`, and that `cloudflared` stays unstarted without a token. |
+| `scripts/verify_extension_package.sh` | The packaged ZIP contains the runtime files and no `.env`, source map, key material, credential-shaped string or widened content-script match. |
+| `scripts/secret_scan.sh` | Credential shapes across everything git can publish. Gitignored key material is reported as a warning, since it cannot reach a commit. |
+| `scripts/docs_check.sh` | Every required document exists, the capture-limitations promises are still present, no document points at a removed script, and each runbook still describes the implemented architecture. |
+| `make lint-shell` | `bash -n` and ShellCheck over every script. |
+| `make lint-workflows` | actionlint over the workflows and the composite action. |
+
 ## Compose smoke test
 
 ```bash
@@ -107,7 +119,7 @@ stack to run short sustained, burst, attachment-metadata, and status-polling
 scenarios. It writes ignored reports under `artifacts/`. The full five-minute
 capacity profile remains available in `tests/load/k6-ingest.js` for a dedicated
 load environment with an out-of-band access token. See
-[SCALING_250_USERS.md](SCALING_250_USERS.md). Never run it against production or
+[CAPACITY.md](CAPACITY.md). Never run it against production or
 a live ChatGPT account.
 
 ## Fixtures

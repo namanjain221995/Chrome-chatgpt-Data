@@ -16,17 +16,23 @@
 │    message-normalizer ─ api-client ─ sync-engine                         │
 └───────────────┬──────────────────────────────────────┬───────────────────┘
                 │ HTTPS (batched, idempotent)          │ presigned PUT
+                ▼                                      │
+        ┌───────────────┐                              │
+        │  Cloudflare   │  edge TLS, WAF, proxied DNS  │
+        └───────┬───────┘                              │
+                │ tunnel (outbound-only from EC2)      │
                 ▼                                      ▼
 ┌────────────────────────────────────────┐   ┌──────────────────────────────┐
 │ EC2 (one instance)                     │   │ Amazon S3 (private)          │
 │                                        │   │                              │
 │  Docker Compose                        │   │  raw/events/…                │
-│  api :443 (FastAPI, direct TLS) ───────┼──▶│  normalized/conversations/…  │
-│    │                                   │   │  attachments/quarantine|clean│
+│  cloudflared ──▶ http://api:8000       │   │  normalized/conversations/…  │
+│    (egress network only)               │   │  attachments/quarantine|clean│
 │    │                                   │   │  exports/jsonl/…             │
-│    │                                   │   │  backups/postgres/…          │
-│    ▼                                   │   └──────────────────────────────┘
-│  postgres:16  (private network only)   │
+│  api (FastAPI, expose 8000) ───────────┼──▶│  backups/postgres/…          │
+│    │                                   │   └──────────────────────────────┘
+│    ▼                                   │
+│  postgres:16  (internal network only)  │
 │    ▲     ▲                             │            ▲
 │    │     │                             │            │
 │  worker  compliance-poller ────────────┼────────────┘  (authorized feed)
@@ -35,10 +41,17 @@
 └────────────────────────────────────────┘
 ```
 
-Cloudflare proxies directly to FastAPI's Origin CA TLS listener on port 443;
-the security group accepts that port only from Cloudflare source ranges.
-PostgreSQL stays on an internal Docker network. pgAdmin is an optional profile
-bound to `127.0.0.1:5050` for SSM port forwarding.
+A named Cloudflare Tunnel is the only public ingress. `cloudflared` holds
+outbound-only connections to the Cloudflare edge and forwards to
+`http://api:8000` over the private Docker `egress` network, so the instance
+publishes no application port at all and needs no origin certificate. FastAPI
+uses `expose: 8000`, never `ports:`. PostgreSQL is on an `internal: true`
+network with no host binding. pgAdmin is an optional `admin` profile bound to
+`127.0.0.1:5050`, reached through an SSH local port-forward.
+
+The only host ports that exist are two loopback management endpoints: the
+tunnel's own `/ready` metrics endpoint on `127.0.0.1:2000`, and pgAdmin on
+`127.0.0.1:5050` when it is deliberately started.
 
 ---
 
@@ -56,7 +69,7 @@ consequences are honest ones:
   volume that survives an instance rebuild.
 - **Vertical scaling only.** Growth means a bigger instance, then a split
   application/database topology. Thresholds are in
-  [SCALING_250_USERS.md](SCALING_250_USERS.md).
+  [CAPACITY.md](CAPACITY.md).
 - **Operational simplicity.** One `docker compose up`, one systemd unit, one
   backup script. A small team can actually run this.
 

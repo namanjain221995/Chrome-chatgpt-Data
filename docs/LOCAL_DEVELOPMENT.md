@@ -79,18 +79,36 @@ make schema-check
 
 Commit the generated JSON Schemas with the model change.
 
-## Production TLS checks
+## Production-shaped Compose checks
 
-`make test-production-compose` generates a disposable certificate and starts
-the production-shaped API over HTTPS on a high local port. The certificate is
-never reused, and local development remains plain HTTP on loopback.
+`make test-production-compose` starts `compose.prod.yaml` with disposable bind
+mounts and throwaway secret files. It proves the real production contract:
+FastAPI serves plain HTTP on the private network and publishes no host port,
+PostgreSQL publishes no host port, pgAdmin's loopback binding actually exists,
+the backup role can reach PostgreSQL through its `.pgpass`, and `cloudflared`
+stays unstarted because no tunnel token exists in CI.
+
+There is no TLS in this stack. Cloudflare terminates TLS at the edge and the
+tunnel carries traffic to `http://api:8000`, so there is no origin certificate
+to generate or validate.
 
 ## Real S3 test
 
-Normal CI has no AWS credential. An administrator may dispatch the optional CI
-job with a temporary OIDC role and a unique prefix beginning
-`integration-tests/`. The test asserts the exact bucket/region, creates one
-generated key, verifies it, and deletes only that key. Never point a test at a
+Neither CI nor `make verify` ever touches AWS: unit tests use an in-memory
+double and botocore Stubber. `tests/integration/test_real_s3.py` exists for an
+administrator who wants a genuine round trip, and runs only when
+`RUN_REAL_S3_TESTS=true` and `TEST_S3_PREFIX` are both set:
+
+```bash
+cd services/backend
+RUN_REAL_S3_TESTS=true AWS_REGION=us-east-1 S3_BUCKET=techsara-chatgpt \
+  TEST_S3_PREFIX=integration-tests/$(date -u +%Y%m%dT%H%M%SZ)/ \
+  pytest -q tests/integration/test_real_s3.py
+```
+
+Run it with short-lived credentials from your own session and a unique prefix
+beginning `integration-tests/`. It asserts the exact bucket and region, creates
+one generated key, verifies it and deletes only that key. Never point it at a
 broad production prefix.
 
 ## Troubleshooting
@@ -102,7 +120,7 @@ broad production prefix.
 | Migration drift | Generate/review a revision; do not alter the assertion |
 | Extension fixture fails | Add a structural sanitized fixture before changing selectors |
 | Worker reports AWS auth | Keep gates false locally or use the approved explicit AWS test |
-| Production TLS smoke fails | Confirm OpenSSL is installed and port 18443 is free |
+| Production smoke fails | Run `make build-image` first; the smoke reuses `techsara-chat-archive-backend:local` |
 
 Before submitting, run `make verify` and ensure the working tree contains only
 the intended changes.

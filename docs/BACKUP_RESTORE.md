@@ -40,9 +40,9 @@ days.
 ## Checking backups without restoring
 
 ```bash
-aws ssm start-session --target <instance-id>
+ssh ec2-user@<host>
 cd /opt/techsara-chat-archive
-sudo docker compose -f compose.prod.yaml exec backup \
+sudo docker compose --env-file .env.production -f compose.prod.yaml exec backup \
   sh /opt/scripts/verify_backup.sh
 ```
 
@@ -53,7 +53,7 @@ chain is healthy today.
 ## Proving a restore (do this monthly)
 
 ```bash
-sudo docker compose -f compose.prod.yaml exec backup \
+sudo docker compose --env-file .env.production -f compose.prod.yaml exec backup \
   sh /opt/scripts/verify_backup.sh --full-restore
 ```
 
@@ -74,7 +74,7 @@ make restore-test
 ```bash
 aws s3 ls s3://techsara-chatgpt/backups/postgres/ --recursive --region us-east-1 | tail -20
 
-sudo docker compose -f compose.prod.yaml exec backup \
+sudo docker compose --env-file .env.production -f compose.prod.yaml exec backup \
   sh /opt/scripts/restore_postgres.sh \
     --from-s3 backups/postgres/2026/03/15/techsara-20260315T031500Z.dump.gz \
     --target-db techsara_recovered
@@ -83,14 +83,37 @@ sudo docker compose -f compose.prod.yaml exec backup \
 The script refuses `--drop-existing` against the live database. Restore beside
 it, verify, then switch over deliberately.
 
+### Proving a backup restores
+
+A backup nobody has restored is a hypothesis. Two commands turn it into a fact.
+
+```bash
+# Locally, against the development database (used by `make restore-test` and CI):
+./scripts/test_restore.sh
+
+# On the production host, against the newest real backup in S3.
+# Restores into a throwaway database and drops it again; the live database is
+# never touched.
+sudo ./scripts/test_restore.sh --from-s3-latest
+```
+
+`scripts/test_restore.sh --from-s3-latest` finds the most recent object under
+`backups/postgres/`, verifies its SHA-256 against the manifest, restores it into
+`techsara_restore_test` and drops that database on success.
+`scripts/restore_postgres.sh` refuses `--drop-existing` against the live
+database, so neither path can overwrite production.
+
+Record size, checksum, age, restored row counts, the Alembic revision, the
+operator and the ticket every time.
+
 ### Full recovery onto a replacement instance
 
 1. Provision the replacement from the manual AWS checklist and attach the existing data
    volume if it survived; otherwise start from an empty one.
-2. Deploy the application: `sudo IMAGE_TAG=<sha> ./scripts/deploy_ec2.sh`.
+2. Deploy the application: `sudo ./scripts/deploy_production.sh <full-sha>`.
 3. Stop the writers so nothing races the restore:
    ```bash
-   sudo docker compose -f compose.prod.yaml stop api worker compliance-poller
+   sudo docker compose --env-file .env.production -f compose.prod.yaml stop api worker
    ```
 4. Restore into a new database, verify, then promote:
    ```bash

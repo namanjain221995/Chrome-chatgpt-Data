@@ -1,29 +1,48 @@
 #!/usr/bin/env bash
-# Start the production Compose file with disposable bind mounts and test secrets.
-set -euo pipefail
+# =============================================================================
+# Start compose.prod.yaml with disposable bind mounts and throwaway secrets.
+#
+# Proves, without any production credential:
+#   * the production file starts a working stack from file-based secrets
+#   * FastAPI serves plain HTTP on the private network and publishes no port
+#   * PostgreSQL publishes no port
+#   * pgAdmin is loopback-only and only under the `admin` profile
+#   * the backup role can reach PostgreSQL through its .pgpass
+#   * the cloudflared service is configured but is NOT started, because a real
+#     tunnel token is required and must never exist in CI
+# =============================================================================
+set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"
 
 PROJECT="techsara-production-smoke"
 DATA_ROOT="$(mktemp -d)"
-COMPOSE=(docker compose -p "${PROJECT}" -f compose.prod.yaml)
+ENV_FILE="$(mktemp)"
+COMPOSE=(docker compose -p "${PROJECT}" --env-file "${ENV_FILE}" -f compose.prod.yaml)
 
-export DATA_ROOT
-export HTTPS_PORT=18443
-export PGADMIN_PORT=15050
-export IMAGE_REPOSITORY=techsara/chat-archive-backend
+# The smoke stack reuses the image CI already built rather than rebuilding it.
+export IMAGE_NAME=techsara-chat-archive-backend
 export IMAGE_TAG=local
-export PUBLIC_BASE_URL=https://archive.example.com
-export ARCHIVE_HOSTNAME=archive.example.com
-export POSTGRES_DB=techsara_chat_archive
-export POSTGRES_USER=techsara_app
-export OIDC_ISSUER=https://accounts.google.com
-export OIDC_CLIENT_ID=production-smoke-client
-export OIDC_REQUIRED_HD=example.com
-export ALLOWED_EMAIL_DOMAINS=example.com
-export MANAGED_WORKSPACE_LABEL='Managed Workspace'
-export PGADMIN_DEFAULT_EMAIL=dba@example.com
+
+cat > "${ENV_FILE}" <<EOF
+DATA_ROOT=${DATA_ROOT}
+IMAGE_NAME=${IMAGE_NAME}
+IMAGE_TAG=${IMAGE_TAG}
+PGADMIN_PORT=15050
+CLOUDFLARED_METRICS_PORT=12000
+PUBLIC_BASE_URL=https://archive.example.com
+ARCHIVE_HOSTNAME=archive.example.com
+POSTGRES_DB=techsara_chat_archive
+POSTGRES_USER=techsara_app
+OIDC_ISSUER=https://accounts.google.com
+OIDC_CLIENT_ID=production-smoke-client
+OIDC_REQUIRED_HD=example.com
+ALLOWED_EMAIL_DOMAINS=example.com
+MANAGED_WORKSPACE_LABEL=Managed Workspace
+PGADMIN_DEFAULT_EMAIL=dba@example.com
+API_WORKERS=2
+EOF
 
 cleanup() {
   result=$?
@@ -31,33 +50,23 @@ cleanup() {
   if [ "${result}" -ne 0 ]; then
     "${COMPOSE[@]}" --profile admin logs --no-color --tail 120 >&2 || true
   fi
-  "${COMPOSE[@]}" --profile admin down -v --remove-orphans >/dev/null 2>&1 || true
+  "${COMPOSE[@]}" --profile admin --profile compliance down -v --remove-orphans >/dev/null 2>&1 || true
+  # PostgreSQL creates root-owned files in the bind mount; remove them from a
+  # container so the runner does not need sudo.
   docker run --rm --volume "${DATA_ROOT}:/data" --entrypoint sh postgres:16.14-alpine \
-    -c 'find /data -mindepth 1 -depth -delete' >/dev/null
-  rmdir "${DATA_ROOT}"
+    -c 'find /data -mindepth 1 -depth -delete' >/dev/null 2>&1 || true
+  rmdir "${DATA_ROOT}" 2>/dev/null || true
+  rm -f "${ENV_FILE}"
   exit "${result}"
 }
 trap cleanup EXIT
 
-mkdir -p "${DATA_ROOT}"/{postgres,backups,secrets,tls-input,pgadmin}
+mkdir -p "${DATA_ROOT}"/{postgres,backups,secrets,pgadmin}
 chmod 0777 "${DATA_ROOT}/postgres" "${DATA_ROOT}/backups" "${DATA_ROOT}/pgadmin"
 chmod 0755 "${DATA_ROOT}/secrets"
-openssl req -x509 -nodes -newkey rsa:2048 -days 8 \
-  -subj '/CN=archive.example.com' \
-  -addext 'subjectAltName=DNS:archive.example.com' \
-  -keyout "${DATA_ROOT}/tls-input/origin.key" \
-  -out "${DATA_ROOT}/tls-input/origin.pem" >/dev/null 2>&1
-docker run --rm --pull never --user 0 --entrypoint /bin/bash \
-  --volume "${ROOT}/scripts/install_origin_tls.sh:/install-origin-tls:ro" \
-  --volume "${DATA_ROOT}:/data" techsara/chat-archive-backend:local \
-  /install-origin-tls --data-root /data \
-    --cert-file /data/tls-input/origin.pem --key-file /data/tls-input/origin.key \
-  >/dev/null
-tls_mode="$(docker run --rm --pull never --user 0 --entrypoint stat \
-  --volume "${DATA_ROOT}:/data:ro" techsara/chat-archive-backend:local \
-  -c '%a:%u:%g' /data/tls/origin.key)"
-test "${tls_mode}" = "440:0:10001"
 
+# A password with the characters that break naive URL building and .pgpass
+# quoting, so the escaping is genuinely exercised.
 db_password='prod-smoke-p@ss:/% word'
 printf '%s' "${db_password}" > "${DATA_ROOT}/secrets/postgres_password"
 printf '%s' "${db_password}" > "${DATA_ROOT}/secrets/postgres_server_password"
@@ -71,9 +80,13 @@ pgpass_password="${pgpass_password//:/\\:}"
 printf 'postgres:5432:*:techsara_app:%s\n' "${pgpass_password}" > "${DATA_ROOT}/secrets/pgpass"
 chmod 0444 "${DATA_ROOT}/secrets/"*
 
-"${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
-"${COMPOSE[@]}" --profile admin up -d --pull missing \
-  postgres api worker pgadmin
+# No cloudflared.env is written on purpose: `required: false` must keep the
+# file valid, and the tunnel must stay unstarted without a real token.
+"${COMPOSE[@]}" config --quiet
+test ! -e "${DATA_ROOT}/secrets/cloudflared.env"
+
+"${COMPOSE[@]}" --profile admin down -v --remove-orphans >/dev/null 2>&1 || true
+"${COMPOSE[@]}" --profile admin up -d --no-build --pull missing postgres api worker pgadmin
 
 healthy=0
 for _ in $(seq 1 90); do
@@ -94,8 +107,32 @@ for _ in $(seq 1 90); do
 done
 test "${healthy}" -eq 1
 
-curl -fkSs -H 'Host: archive.example.com' \
-  https://127.0.0.1:${HTTPS_PORT}/health/ready | grep -q '"status":"ok"'
+# Readiness over plain HTTP on the private network, with the Host header the
+# Cloudflare Tunnel will forward.
+"${COMPOSE[@]}" exec -T api curl -fsS \
+  -H 'Host: archive.example.com' http://127.0.0.1:8000/health/ready | grep -q '"status":"ok"'
+
+# The API must not be reachable from the host: it publishes no port at all.
+api_ports="$(docker inspect -f '{{json .NetworkSettings.Ports}}' "$("${COMPOSE[@]}" ps -q api)")"
+test "${api_ports}" = '{"8000/tcp":null}' || {
+  echo "the API container unexpectedly publishes ports: ${api_ports}" >&2
+  exit 1
+}
+postgres_ports="$(docker inspect -f '{{json .NetworkSettings.Ports}}' "$("${COMPOSE[@]}" ps -q postgres)")"
+test "${postgres_ports}" = '{"5432/tcp":null}' || {
+  echo "PostgreSQL unexpectedly publishes ports: ${postgres_ports}" >&2
+  exit 1
+}
+
+# pgAdmin is bound to loopback only.
+pgadmin_binding="$(docker inspect \
+  -f '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{$p}}={{.HostIp}}:{{.HostPort}} {{end}}{{end}}' \
+  "$("${COMPOSE[@]}" ps -q pgadmin)")"
+case "${pgadmin_binding}" in
+  *"80/tcp=127.0.0.1:15050"*) ;;
+  *) echo "pgAdmin is not loopback-bound: ${pgadmin_binding}" >&2; exit 1 ;;
+esac
+
 test "$("${COMPOSE[@]}" exec -T api id -u)" = "10001"
 "${COMPOSE[@]}" exec -T api python -c "
 from app.core.config import get_settings
@@ -104,13 +141,19 @@ assert s.aws_region == 'us-east-1'
 assert s.s3_bucket == 'techsara-chatgpt'
 assert not s.s3_endpoint_url
 assert 'p%40ss%3A%2F%25%20word' in s.database_url
+assert s.max_expected_database_connections <= s.postgres_max_connections - 15
+assert not s.browser_capture_active
 "
+
+# cloudflared must not be running: no token was provided.
 test "$("${COMPOSE[@]}" ps --status running --services | sort | tr '\n' ' ')" = \
   "api pgadmin postgres worker "
+
+# The backup role reaches PostgreSQL through the mounted .pgpass.
 # The quoted variables expand inside the container, not in this shell.
 # shellcheck disable=SC2016
-"${COMPOSE[@]}" run --rm --pull never --no-deps --entrypoint /bin/sh backup -c \
+"${COMPOSE[@]}" run --rm --no-deps --entrypoint /bin/sh backup -c \
   'cp "$PGPASS_SOURCE_FILE" "$PGPASSFILE"; chmod 0600 "$PGPASSFILE"; exec pg_dump --host=postgres --username=techsara_app --dbname=techsara_chat_archive --schema-only' \
   >/dev/null
 
-echo "production Compose secret, identity, database and private pgAdmin smoke passed"
+echo "production Compose tunnel topology, secrets, identity and private pgAdmin smoke passed"

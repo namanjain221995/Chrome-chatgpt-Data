@@ -44,24 +44,45 @@ over the message target.
 | API (3 workers) | ~1.5 GiB | ~500 MiB per worker |
 | Worker | ~500 MiB | Concurrency 2 |
 | Compliance poller | ~200 MiB | Idle unless configured |
-| Origin TLS overhead | included in API | |
+| cloudflared | ~100 MiB | Limited to 256 MiB in `compose.prod.yaml` |
 | Backup | ~200 MiB | Peaks during a dump |
 | OS and Docker | ~800 MiB | |
-| **Headroom** | **~1.5 GiB** | pgAdmin and ClamAV stay stopped |
+| **Headroom** | **~1.5 GiB** | pgAdmin stays stopped |
 
-pgAdmin (~300 MiB) and ClamAV (~1.5 GiB) are opt-in profiles for exactly this
-reason: neither fits comfortably alongside everything else on 8 GiB.
+TLS is terminated by Cloudflare, so the origin does no certificate work; the
+tunnel connector's cost is the ~100 MiB above. pgAdmin (~300 MiB) is an opt-in
+profile for exactly this reason.
 
 ## Connection budget
 
+Each application *process* owns its own SQLAlchemy pool, so pools multiply by
+process count, not by request concurrency:
+
 ```
-API_WORKERS × (DATABASE_POOL_SIZE + DATABASE_MAX_OVERFLOW)
-  + WORKER_CONCURRENCY + 1 + 5
-= 3 × (20 + 10) + 2 + 1 + 5 = 98     against max_connections = 120
+(DATABASE_POOL_SIZE + DATABASE_MAX_OVERFLOW)
+  × (API_WORKERS + job worker + optional compliance poller)
+= (12 + 4) × (3 + 1 + 1) = 80        against max_connections = 120
 ```
 
+A reserve of 15 connections is held back for PostgreSQL's own superuser slots,
+the nightly `pg_dump`, an incident `psql` session and the optional pgAdmin
+profile, leaving 105 usable.
+
 Raising `API_WORKERS` without recomputing this is the standard way to exhaust
-PostgreSQL connections. If you raise workers, lower the pool size to match.
+PostgreSQL connections, so the arithmetic is enforced rather than documented:
+
+* `Settings.max_expected_database_connections` computes it, and the production
+  guardrail in `app/core/config.py` **refuses to start** when the worst case
+  exceeds `POSTGRES_MAX_CONNECTIONS` minus the reserve.
+* `scripts/verify_production_config.sh` asserts the same inequality statically
+  in CI, against the `max_connections` that `compose.prod.yaml` configures.
+* The production Compose smoke asserts it once more at runtime.
+
+`POSTGRES_MAX_CONNECTIONS` is a single value used both for PostgreSQL's
+`-c max_connections` and for the application's budget check, so the two cannot
+drift apart. Pool behaviour is otherwise bounded by
+`DATABASE_POOL_TIMEOUT_SECONDS` (30 s), `DATABASE_POOL_RECYCLE_SECONDS`
+(1800 s) and `DATABASE_POOL_PRE_PING` (on), all configurable from SSM.
 
 ## Running the load test
 
@@ -116,7 +137,7 @@ Act when a measurement crosses these, sustained over 15 minutes:
 | Queue depth | > 10,000 pending | Raise `WORKER_CONCURRENCY` to 4 |
 | Queue depth | > 50,000 pending | Backpressure engages automatically; investigate |
 | Oldest pending job | > 15 minutes | Worker is falling behind; scale it |
-| Database connections | > 150 | Lower pool sizes before raising `max_connections` |
+| Database connections | > 80% of `max_connections` | Lower pool sizes before raising `max_connections`; `verify_production.sh` warns at this threshold |
 | EBS `await` | > 20 ms | Raise gp3 IOPS/throughput |
 | Data volume | > 80% | Grow the volume (online) |
 

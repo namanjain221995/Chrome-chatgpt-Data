@@ -5,6 +5,7 @@ SHELL := /bin/bash
 ROOT      := $(shell pwd)
 BACKEND   := $(ROOT)/services/backend
 EXTENSION := $(ROOT)/apps/chrome-extension
+IMAGE_NAME := techsara-chat-archive-backend
 VENV      := $(BACKEND)/.venv
 PY        := $(VENV)/bin/python
 PIP       := $(VENV)/bin/pip
@@ -140,24 +141,25 @@ schema-check:
 	@git diff --exit-code -- packages/schemas
 	@cd $(EXTENSION) && node scripts/validate-schemas.mjs
 
-.PHONY: extension-build extension-zip build-image bundle
+.PHONY: extension-build extension-zip extension-verify build-image
 extension-build: ## Build the Manifest V3 extension
 	@cd $(EXTENSION) && npm run --silent build
 
 extension-zip: extension-build ## Build and validate the deterministic extension ZIP
 	@cd $(EXTENSION) && npm run --silent validate:manifest
 	@cd $(EXTENSION) && npm run --silent package
-	@first="$$(sha256sum artifacts/*.zip | awk '{print $$1}')"; \
+	@first="$$(sha256sum artifacts/techsara-chatgpt-extension-*.zip | awk '{print $$1}')"; \
 		cd $(EXTENSION); npm run --silent package >/dev/null; cd $(ROOT); \
-		second="$$(sha256sum artifacts/*.zip | awk '{print $$1}')"; \
+		second="$$(sha256sum artifacts/techsara-chatgpt-extension-*.zip | awk '{print $$1}')"; \
 		test "$$first" = "$$second"; echo "extension package reproducible: $$first"
+	@$(MAKE) --no-print-directory extension-verify
 
-build-image:
-	@docker build -t techsara/chat-archive-backend:local \
+extension-verify: ## Assert the packaged extension carries no secret or source map
+	@bash scripts/verify_extension_package.sh
+
+build-image: ## Build the backend image under the production image name
+	@docker build -t $(IMAGE_NAME):local \
 		--build-arg GIT_SHA=$$(git rev-parse --short HEAD 2>/dev/null || echo local) $(BACKEND)
-
-bundle: ## Build the deterministic EC2 deployment bundle
-	@bash scripts/deploy_bundle.sh
 
 .PHONY: compose-config production-config
 compose-config: ## Validate development and production Compose files
@@ -185,10 +187,10 @@ test-production-compose:
 
 .PHONY: backup restore-test load-test
 backup:
-	@docker compose -f compose.prod.yaml exec -T backup /bin/sh /opt/scripts/backup_postgres.sh
+	@docker compose --env-file .env.production -f compose.prod.yaml exec -T backup /bin/sh /opt/scripts/backup_postgres.sh
 
 restore-test: test-db-up
-	@bash scripts/restore_test_local.sh
+	@bash scripts/test_restore.sh
 
 load-test:
 	@bash tests/load/run_smoke.sh
@@ -235,7 +237,6 @@ verify: ## Run the complete local CI gate
 	@$(MAKE) --no-print-directory compose-config
 	@$(MAKE) --no-print-directory security-check
 	@$(MAKE) --no-print-directory docs-check
-	@$(MAKE) --no-print-directory bundle
 	@$(MAKE) --no-print-directory build-image
 	@$(MAKE) --no-print-directory test-production-compose
 	@$(MAKE) --no-print-directory test-compose

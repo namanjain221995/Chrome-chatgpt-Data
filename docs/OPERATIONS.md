@@ -16,7 +16,7 @@ An empty `warnings` array means nothing needs attention.
 
 ```bash
 # Backups exist, are fresh, and have manifests
-sudo docker compose -f compose.prod.yaml exec backup \
+sudo docker compose --env-file .env.production -f compose.prod.yaml exec backup \
   sh /opt/scripts/verify_backup.sh
 
 # Disk
@@ -143,7 +143,7 @@ Detailed incident procedures are in [INCIDENT_RUNBOOK.md](INCIDENT_RUNBOOK.md).
 
 | Task | Who | How |
 | --- | --- | --- |
-| Instance shell | Platform engineer | SSM Session Manager |
+| Instance shell | Platform engineer | SSH as `ec2-user` (SSM Session Manager as break-glass) |
 | Database queries | DBA / platform | psql in the container, or pgAdmin over a forwarded port |
 | Reading archived content | compliance_admin, security_reviewer | Audited admin API |
 | Exports | data_curator, compliance_admin | Audited admin API |

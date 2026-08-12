@@ -1,0 +1,129 @@
+name: Test EC2 connection
+
+# Manual only. Proves the four deployment secrets work end to end before any
+# real deployment is attempted, and prints only non-sensitive facts about the
+# instance.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ec2-connection-test
+  cancel-in-progress: false
+
+jobs:
+  connect:
+    name: SSH reachability and host prerequisites
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Configure SSH
+        uses: ./.github/actions/ec2-ssh
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          user: ${{ secrets.EC2_USER }}
+          port: ${{ secrets.EC2_SSH_PORT }}
+          private-key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          host-key: ${{ vars.EC2_SSH_HOST_KEY || secrets.EC2_SSH_HOST_KEY }}
+
+      - name: Report instance facts
+        id: facts
+        run: |
+          set -Eeuo pipefail
+          # Everything below is deliberately non-sensitive: no secret is read
+          # on the instance and no command output can contain one.
+          ssh ec2 'bash -Eeuo pipefail -s' <<'REMOTE' | tee /tmp/facts.txt
+          echo "hostname:        $(hostname)"
+          echo "current user:    $(id -un) (uid $(id -u))"
+          echo "os:              $(. /etc/os-release && echo "${PRETTY_NAME}")"
+          echo "kernel:          $(uname -r)"
+          echo "architecture:    $(uname -m)"
+
+          if command -v docker >/dev/null 2>&1; then
+            echo "docker:          $(docker --version)"
+          else
+            echo "docker:          NOT INSTALLED"
+          fi
+
+          if docker compose version >/dev/null 2>&1; then
+            echo "docker compose:  $(docker compose version --short)"
+          else
+            echo "docker compose:  NOT INSTALLED"
+          fi
+
+          if sudo -n true 2>/dev/null; then
+            echo "passwordless sudo: yes"
+          else
+            echo "passwordless sudo: NO"
+          fi
+
+          app_dir=/opt/techsara-chat-archive
+          if [ -d "${app_dir}" ]; then
+            echo "app directory:   present (${app_dir})"
+            if [ -d "${app_dir}/.git" ]; then
+              echo "git checkout:    yes, HEAD $(git -C "${app_dir}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+              echo "git remote:      $(git -C "${app_dir}" remote get-url origin 2>/dev/null || echo none)"
+            else
+              echo "git checkout:    NO (.git missing)"
+            fi
+          else
+            echo "app directory:   MISSING (${app_dir})"
+          fi
+
+          data_root=/srv/techsara-chat-archive
+          if [ -d "${data_root}" ]; then
+            echo "data root:       present (${data_root})"
+          else
+            echo "data root:       missing (run scripts/prepare_server_storage.sh)"
+          fi
+
+          echo "disk free:       $(df -h / | awk 'NR==2 {print $4" of "$2}')"
+          echo "memory:          $(free -h 2>/dev/null | awk '/^Mem:/ {print $7" available of "$2}' || echo unknown)"
+
+          if command -v aws >/dev/null 2>&1; then
+            echo "aws cli:         $(aws --version 2>&1)"
+            if role_arn="$(aws sts get-caller-identity --query Arn --output text 2>/dev/null)"; then
+              # An assumed-role ARN names the role, not a credential.
+              echo "aws identity:    ${role_arn}"
+            else
+              echo "aws identity:    UNAVAILABLE (instance role missing?)"
+            fi
+          else
+            echo "aws cli:         NOT INSTALLED"
+          fi
+          REMOTE
+
+      - name: Fail on missing prerequisites
+        run: |
+          set -Eeuo pipefail
+          problems=0
+          check() {
+            if grep -q "$1" /tmp/facts.txt; then
+              echo "::error::$2"
+              problems=$((problems + 1))
+            fi
+          }
+          check 'docker: *NOT INSTALLED'        'Docker is not installed on the instance'
+          check 'docker compose: *NOT INSTALLED' 'The Docker Compose plugin is not installed'
+          check 'app directory: *MISSING'       '/opt/techsara-chat-archive does not exist'
+          check 'git checkout: *NO'             '/opt/techsara-chat-archive is not a git checkout'
+          check 'passwordless sudo: *NO'        'The deployment user cannot run sudo without a password'
+          check 'aws identity: *UNAVAILABLE'    'The EC2 instance role is not usable from the instance'
+          [ "${problems}" -eq 0 ] || exit 1
+          echo "all prerequisites are satisfied"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## EC2 connection test"
+            echo
+            echo '```'
+            cat /tmp/facts.txt 2>/dev/null || echo "no output was captured"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

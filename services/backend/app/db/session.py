@@ -1,12 +1,14 @@
 """Async engine and session management.
 
-Connection pooling lives inside each API process (no RDS Proxy / PgBouncer in
-version 1). Pool sizing is documented in docs/SCALING_250_USERS.md:
+Connection pooling lives inside each application process; there is no external
+pooler. Pool sizing is documented in docs/CAPACITY.md:
 
-    total_connections = API_WORKERS * (DATABASE_POOL_SIZE + DATABASE_MAX_OVERFLOW)
-                      + WORKER_CONCURRENCY + compliance poller (1)
+    worst_case = (DATABASE_POOL_SIZE + DATABASE_MAX_OVERFLOW)
+                 * (API_WORKERS + job worker + optional compliance poller)
 
-which must stay below PostgreSQL `max_connections`.
+`Settings.max_expected_database_connections` computes it, and the production
+guardrail in `app.core.config` refuses to start when it would not fit inside
+PostgreSQL `max_connections`.
 """
 
 from __future__ import annotations
@@ -47,11 +49,11 @@ def build_engine(settings: Settings | None = None, **overrides: Any) -> AsyncEng
     }
     kwargs: dict[str, Any] = {
         "echo": False,
-        "pool_pre_ping": True,
+        "pool_pre_ping": settings.database_pool_pre_ping,
         "pool_size": settings.database_pool_size,
         "max_overflow": settings.database_max_overflow,
-        "pool_recycle": 1800,
-        "pool_timeout": 30,
+        "pool_recycle": settings.database_pool_recycle_seconds,
+        "pool_timeout": settings.database_pool_timeout_seconds,
         "connect_args": connect_args,
     }
     kwargs.update(overrides)

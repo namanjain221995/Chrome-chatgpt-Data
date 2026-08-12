@@ -143,7 +143,7 @@ before merging, never in production.
 
 Roughly 700 MB/day before compression, so the 100 GiB data volume holds about
 four months at full stress. Real usage for 250 employees is far below this;
-see [SCALING_250_USERS.md](SCALING_250_USERS.md) for the monitoring thresholds
+see [CAPACITY.md](CAPACITY.md) for the monitoring thresholds
 that tell you when to grow.
 
 ## Retention

@@ -1,5 +1,14 @@
-# Production stack for one Ubuntu EC2 host. Cloudflare proxies HTTPS directly
-# to the TLS-enabled FastAPI container on port 443.
+# Production stack for one Amazon Linux 2023 EC2 host.
+#
+# Public ingress is a named Cloudflare Tunnel only. `cloudflared` holds an
+# outbound-only connection to Cloudflare and forwards to http://api:8000 over a
+# private Docker network, so the instance needs no inbound application port and
+# no origin certificate.
+#
+#   Cloudflare edge -> cloudflared (this host) -> api:8000 -> postgres / S3
+#
+# The application image is built on this host from the exact deployed Git SHA
+# (see docs/DECISIONS.md); IMAGE_TAG is that SHA and is never `latest`.
 name: techsara-chat-archive
 
 x-logging: &default-logging
@@ -11,19 +20,25 @@ x-logging: &default-logging
 x-prod-env: &prod-env
   ENVIRONMENT: production
   APP_NAME: techsara-chat-archive
+  GIT_SHA: ${IMAGE_TAG:?set IMAGE_TAG}
   PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL}
   ARCHIVE_HOSTNAME: ${ARCHIVE_HOSTNAME:?set ARCHIVE_HOSTNAME}
   API_BASE_PATH: /api/v1
   DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?set POSTGRES_USER}:REPLACE@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB}
   POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
-  DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-20}
-  DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-10}
+  DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-12}
+  DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-4}
+  DATABASE_POOL_TIMEOUT_SECONDS: ${DATABASE_POOL_TIMEOUT_SECONDS:-30}
+  DATABASE_POOL_RECYCLE_SECONDS: ${DATABASE_POOL_RECYCLE_SECONDS:-1800}
+  DATABASE_POOL_PRE_PING: ${DATABASE_POOL_PRE_PING:-true}
+  POSTGRES_MAX_CONNECTIONS: ${POSTGRES_MAX_CONNECTIONS:-120}
   AWS_REGION: us-east-1
   S3_BUCKET: techsara-chatgpt
   S3_ENDPOINT_URL: ""
   S3_USE_PATH_STYLE: "false"
   S3_ENCRYPTION_MODE: ${S3_ENCRYPTION_MODE:-SSE-S3}
   S3_KMS_KEY_ID: ${S3_KMS_KEY_ID:-}
+  S3_HEALTH_CACHE_SECONDS: ${S3_HEALTH_CACHE_SECONDS:-60}
   OIDC_ISSUER: ${OIDC_ISSUER:?set OIDC_ISSUER}
   OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?set OIDC_CLIENT_ID}
   OIDC_REQUIRED_HD: ${OIDC_REQUIRED_HD:?set OIDC_REQUIRED_HD}
@@ -36,6 +51,9 @@ x-prod-env: &prod-env
   DEV_AUTH_ENABLED: "false"
   MANAGED_WORKSPACE_LABEL: ${MANAGED_WORKSPACE_LABEL:?set MANAGED_WORKSPACE_LABEL}
   MANAGED_WORKSPACE_IDS: ${MANAGED_WORKSPACE_IDS:-}
+  OPENAI_WORKSPACE_ID: ${OPENAI_WORKSPACE_ID:-}
+  # Capture gates are fail-closed. Both must be true, server-side, before any
+  # message content is accepted from the browser extension.
   BROWSER_CONTENT_CAPTURE_ENABLED: ${BROWSER_CONTENT_CAPTURE_ENABLED:-false}
   OPENAI_WRITTEN_AUTHORIZATION_CONFIRMED: ${OPENAI_WRITTEN_AUTHORIZATION_CONFIRMED:-false}
   AUTO_ARCHIVE_CURRENT_OPEN_CHAT: ${AUTO_ARCHIVE_CURRENT_OPEN_CHAT:-true}
@@ -44,13 +62,20 @@ x-prod-env: &prod-env
   TRAINING_EXPORT_ENABLED: ${TRAINING_EXPORT_ENABLED:-false}
   OPENAI_COMPLIANCE_API_KEY_FILE: /run/secrets/openai_compliance_api_key
   LOG_FORMAT: json
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
   LOG_MESSAGE_CONTENT: "false"
   API_WORKERS: ${API_WORKERS:-3}
   WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
 
 x-app-service: &app-service
-  image: ${IMAGE_REPOSITORY:?set IMAGE_REPOSITORY}:${IMAGE_TAG:?set IMAGE_TAG}
-  pull_policy: always
+  # Built on the instance from the deployed commit; never pulled from a registry.
+  build:
+    context: ./services/backend
+    dockerfile: Dockerfile
+    args:
+      GIT_SHA: ${IMAGE_TAG:?set IMAGE_TAG}
+  image: ${IMAGE_NAME:-techsara-chat-archive-backend}:${IMAGE_TAG:?set IMAGE_TAG}
+  pull_policy: never
   environment: *prod-env
   volumes:
     - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets/postgres_password:/run/secrets/postgres_password:ro
@@ -66,6 +91,10 @@ x-app-service: &app-service
   cap_drop: [ALL]
 
 services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16. Internal network only: there is deliberately no `ports` key,
+  # so the database is unreachable from outside the Docker bridge.
+  # ---------------------------------------------------------------------------
   postgres:
     image: postgres:16.14-alpine
     restart: unless-stopped
@@ -75,6 +104,8 @@ services:
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       POSTGRES_INITDB_ARGS: "--data-checksums"
       TZ: UTC
+    # Sized for a 2 vCPU / 8 GiB instance carrying ~250 employees; see
+    # docs/CAPACITY.md for the arithmetic behind max_connections.
     command:
       - postgres
       - -c
@@ -86,7 +117,7 @@ services:
       - -c
       - effective_cache_size=5GB
       - -c
-      - max_connections=120
+      - max_connections=${POSTGRES_MAX_CONNECTIONS:-120}
       - -c
       - wal_compression=on
       - -c
@@ -118,6 +149,9 @@ services:
         reservations:
           memory: 2g
 
+  # ---------------------------------------------------------------------------
+  # One-shot schema migration. Runs to completion before api/worker start.
+  # ---------------------------------------------------------------------------
   migrate:
     <<: *app-service
     command: ["alembic", "upgrade", "head"]
@@ -131,27 +165,47 @@ services:
           memory: 512m
           cpus: "0.5"
 
+  # ---------------------------------------------------------------------------
+  # FastAPI. Plain HTTP on the private network; TLS is terminated by Cloudflare
+  # and the tunnel is the only path in. No `ports` key, by design.
+  # ---------------------------------------------------------------------------
   api:
     <<: *app-service
     restart: unless-stopped
-    command: ["gunicorn", "app.main:app", "--worker-class", "uvicorn.workers.UvicornWorker", "--workers", "3", "--bind", "0.0.0.0:8443", "--certfile", "/run/tls/origin.pem", "--keyfile", "/run/tls/origin.key", "--timeout", "60", "--graceful-timeout", "30", "--keep-alive", "5", "--max-requests", "2000", "--max-requests-jitter", "200", "--access-logfile", "-", "--error-logfile", "-"]
-    volumes:
-      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets/postgres_password:/run/secrets/postgres_password:ro
-      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets/jwt_secret:/run/secrets/jwt_secret:ro
-      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets/config_signing_key:/run/secrets/config_signing_key:ro
-      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets/oidc_client_secret:/run/secrets/oidc_client_secret:ro
-      - ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets/openai_compliance_api_key:/run/secrets/openai_compliance_api_key:ro
-      - ${DATA_ROOT:-/srv/techsara-chat-archive}/tls/origin.pem:/run/tls/origin.pem:ro
-      - ${DATA_ROOT:-/srv/techsara-chat-archive}/tls/origin.key:/run/tls/origin.key:ro
-    ports:
-      - "0.0.0.0:${HTTPS_PORT:-443}:8443"
+    command:
+      - gunicorn
+      - app.main:app
+      - --worker-class
+      - uvicorn.workers.UvicornWorker
+      - --workers
+      - "${API_WORKERS:-3}"
+      - --bind
+      - 0.0.0.0:8000
+      - --timeout
+      - "60"
+      - --graceful-timeout
+      - "30"
+      - --keep-alive
+      - "5"
+      - --max-requests
+      - "2000"
+      - --max-requests-jitter
+      - "200"
+      - --access-logfile
+      - "-"
+      - --error-logfile
+      - "-"
+    expose:
+      - "8000"
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    # TrustedHostMiddleware only accepts the archive hostname, so the probe has
+    # to present it explicitly. $$ escapes for the container's own environment.
     healthcheck:
-      test: ["CMD-SHELL", "curl -fkSs -H \"Host: $${ARCHIVE_HOSTNAME}\" https://127.0.0.1:8443/health/live"]
+      test: ["CMD-SHELL", "curl -fsS -H \"Host: $${ARCHIVE_HOSTNAME}\" http://127.0.0.1:8000/health/live"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -165,6 +219,9 @@ services:
         reservations:
           memory: 768m
 
+  # ---------------------------------------------------------------------------
+  # PostgreSQL-backed job worker (FOR UPDATE SKIP LOCKED claiming).
+  # ---------------------------------------------------------------------------
   worker:
     <<: *app-service
     restart: unless-stopped
@@ -185,30 +242,51 @@ services:
         reservations:
           memory: 384m
 
-  compliance-poller:
-    <<: *app-service
-    profiles: [compliance]
+  # ---------------------------------------------------------------------------
+  # Cloudflare Tunnel: the only public ingress. Outbound-only, token-authorised,
+  # pinned by tag and digest. The token is supplied through a root-owned env
+  # file rendered from SSM, never through the command line (which would put it
+  # in `docker inspect` output and process listings).
+  # ---------------------------------------------------------------------------
+  cloudflared:
+    image: cloudflare/cloudflared:2026.1.1@sha256:5bb6a0870686742d00e171f36c892ba91e5994631bc363d808b9ba822262dad6
     restart: unless-stopped
-    command: ["python", "-m", "app.workers.compliance_poller"]
-    environment:
-      <<: *prod-env
-      COMPLIANCE_POLL_ENABLED: ${COMPLIANCE_POLL_ENABLED:-false}
-      OPENAI_COMPLIANCE_BASE_URL: ${OPENAI_COMPLIANCE_BASE_URL:-}
-      OPENAI_COMPLIANCE_LOG_PATH: ${OPENAI_COMPLIANCE_LOG_PATH:-}
-      OPENAI_COMPLIANCE_FILES_PATH: ${OPENAI_COMPLIANCE_FILES_PATH:-}
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --metrics
+      - 0.0.0.0:2000
+      - --loglevel
+      - ${CLOUDFLARED_LOG_LEVEL:-info}
+      - run
+    env_file:
+      # `required: false` keeps `docker compose config` usable in CI, where no
+      # tunnel token exists. The deploy script refuses to start the tunnel if
+      # the file is missing.
+      - path: ${DATA_ROOT:-/srv/techsara-chat-archive}/secrets/cloudflared.env
+        required: false
+    # Loopback only: this is the tunnel's own readiness endpoint, used by
+    # scripts/verify_production.sh. It is not application traffic.
+    ports:
+      - "127.0.0.1:${CLOUDFLARED_METRICS_PORT:-2000}:2000"
+    # Deliberately NOT on the `backend` network: the tunnel can reach the API
+    # and the internet, and cannot reach PostgreSQL.
+    networks: [egress]
     depends_on:
-      postgres:
+      api:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-    healthcheck:
-      disable: true
+    logging: *default-logging
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
     deploy:
       resources:
         limits:
-          memory: 512m
+          memory: 256m
           cpus: "0.5"
 
+  # ---------------------------------------------------------------------------
+  # Nightly logical backup -> gzip -> SHA-256 manifest -> S3.
+  # ---------------------------------------------------------------------------
   backup:
     <<: *app-service
     restart: unless-stopped
@@ -237,6 +315,39 @@ services:
           memory: 768m
           cpus: "0.5"
 
+  # ---------------------------------------------------------------------------
+  # Optional: authorized enterprise compliance feed. Never started by a normal
+  # deployment; requires COMPLIANCE_POLL_ENABLED=true and the `compliance`
+  # profile.
+  # ---------------------------------------------------------------------------
+  compliance-poller:
+    <<: *app-service
+    profiles: [compliance]
+    restart: unless-stopped
+    command: ["python", "-m", "app.workers.compliance_poller"]
+    environment:
+      <<: *prod-env
+      COMPLIANCE_POLL_ENABLED: ${COMPLIANCE_POLL_ENABLED:-false}
+      OPENAI_COMPLIANCE_BASE_URL: ${OPENAI_COMPLIANCE_BASE_URL:-}
+      OPENAI_COMPLIANCE_LOG_PATH: ${OPENAI_COMPLIANCE_LOG_PATH:-}
+      OPENAI_COMPLIANCE_FILES_PATH: ${OPENAI_COMPLIANCE_FILES_PATH:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      disable: true
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.5"
+
+  # ---------------------------------------------------------------------------
+  # Optional: pgAdmin. Never started by a normal deployment. Loopback-bound and
+  # reached over an SSH local port-forward; see docs/PGADMIN_ACCESS.md.
+  # ---------------------------------------------------------------------------
   pgadmin:
     image: dpage/pgadmin4:8.14
     profiles: [admin]
@@ -254,7 +365,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    networks: [backend]
+    # `backend` reaches PostgreSQL. `admin` exists solely because Docker cannot
+    # realise a published host port for a container attached only to an
+    # internal network - the binding is accepted and then silently never
+    # created, which would make the loopback port unreachable.
+    networks: [backend, admin]
     logging: *default-logging
     security_opt: ["no-new-privileges:true"]
     deploy:
@@ -264,8 +379,14 @@ services:
           cpus: "0.5"
 
 networks:
+  # No route off the host: PostgreSQL lives here only.
   backend:
     driver: bridge
     internal: true
+  # Outbound internet for S3, OIDC and the Cloudflare edge.
   egress:
+    driver: bridge
+  # Loopback publishing for the optional admin profile. Separate from `egress`
+  # so pgAdmin never shares a bridge with the API or the tunnel.
+  admin:
     driver: bridge

@@ -41,20 +41,38 @@ fails the build if one appears. ESLint bans `document.cookie`, `localStorage`
 and `sessionStorage` in extension source.
 
 ### 7. TLS everywhere
-FastAPI terminates origin TLS directly with a read-only Cloudflare Origin CA
-certificate and sets HSTS. Cloudflare validates the origin in Full (strict)
-mode. The EC2 security group accepts port 443 only from Cloudflare ranges. The
-S3 bucket policy denies any request with `aws:SecureTransport = false`. The
+Cloudflare terminates TLS at the edge and sets HSTS. Traffic reaches the
+instance through a named Cloudflare Tunnel: `cloudflared` dials out to
+Cloudflare, so there is no inbound application port, no origin certificate and
+no origin private key to protect or rotate. The only hop that is not TLS is
+`cloudflared -> api:8000`, which is a private Docker network on the same host.
+The S3 bucket policy denies any request with `aws:SecureTransport = false`. The
 extension refuses a non-HTTPS backend URL from managed policy.
 
-### 8. PostgreSQL and pgAdmin never publicly exposed
-Neither publishes a host port in `compose.yaml`. pgAdmin lives behind the `admin`
-profile and binds to `127.0.0.1` only. CI asserts that PostgreSQL has no
-published port. Access is via SSM port forwarding — see
+### 8. FastAPI, PostgreSQL and pgAdmin never publicly exposed
+FastAPI uses `expose: 8000` and publishes no host port at all; PostgreSQL has no
+host binding and sits on an `internal: true` Docker network. pgAdmin lives
+behind the `admin` profile and binds to `127.0.0.1` only.
+`scripts/verify_production_config.sh` asserts all of this statically, and the
+production Compose smoke test asserts it again at runtime by inspecting the
+actual container port bindings.
+
+Note that a container attached only to an internal network cannot publish a host
+port: Docker accepts the binding and silently never creates it. pgAdmin is
+therefore also attached to a dedicated non-internal `admin` bridge so its
+loopback binding genuinely exists. The topology check enforces this rule for
+every service that publishes a port.
+
+Access is via an SSH local port-forward — see
 [PGADMIN_ACCESS.md](PGADMIN_ACCESS.md).
 
-### 9. SSM Session Manager, no public SSH
-The security group has no SSH rule. Administration uses an audited SSM session.
+### 9. SSH is the only administrative path
+Application traffic never uses SSH, and SSH never carries application traffic.
+Restrict port 22 to a controlled source range or a bastion. GitHub Actions
+authenticates with a dedicated key held in `EC2_SSH_PRIVATE_KEY`, with host-key
+checking always enabled and the host key pinned through the
+`EC2_SSH_HOST_KEY` repository variable; `StrictHostKeyChecking=no` is never
+used. See [GITHUB_SECRETS.md](GITHUB_SECRETS.md).
 
 ### 10–11. S3 block public access and encryption
 Block-all-public-access, `BucketOwnerEnforced` ownership (ACLs disabled),

@@ -52,7 +52,7 @@ reasonable choice. Anything here can be changed by configuration unless noted.
 | A23 | Rate limiting is per-process, divided by `API_WORKERS` | Redis/ElastiCache is prohibited. The division makes the fleet-wide limit match the configured value. |
 | A24 | The worker schedules its own periodic jobs | Avoids a separate cron container; jobs coalesce on a dedupe key. |
 | A25 | Backups run as a loop in a sidecar, not cron | Inherits the container environment and the instance profile; logs like every other service. A systemd timer alternative is provided. |
-| A26 | Ubuntu 24.04 LTS is the host OS | Long support window, current Docker packages, SSM Agent available. |
+| A26 | Amazon Linux 2023 is the host OS, login user `ec2-user` | Supplied by the operator; current Docker packages, SSM Agent preinstalled, `dnf` package management. |
 | A27 | The stack starts through a systemd unit | Survives reboots and instance stop/start without manual intervention. |
 
 ## Chrome extension

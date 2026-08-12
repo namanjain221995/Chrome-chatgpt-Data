@@ -57,7 +57,7 @@ Disk and memory alarms need the agent. Without it those alarms sit in
 silent.
 
 ```bash
-aws ssm start-session --target <instance-id>
+ssh ec2-user@<host>
 sudo wget https://amazoncloudwatch-agent.s3.amazonaws.com/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
 sudo dpkg -i amazon-cloudwatch-agent.deb
 
@@ -109,7 +109,7 @@ Add this to `scripts/backup_postgres.sh` once the instance role has
 Every service logs structured JSON to stdout, with rotation at 10 MB × 5 files.
 
 ```bash
-sudo docker compose -f compose.prod.yaml logs -f api
+sudo docker compose --env-file .env.production -f compose.prod.yaml logs -f api
 sudo docker compose ... logs --since 1h worker | jq 'select(.level=="error")'
 sudo docker compose ... logs api | jq 'select(.correlation_id=="abc123")'
 ```

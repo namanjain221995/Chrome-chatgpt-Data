@@ -29,32 +29,43 @@ CLI verification, expected output, and rollback.
 
 ## EC2, storage, and networking
 
-- [ ] EC2 instance: Ubuntu 24.04 LTS x86_64, `t3a.large`, no key pair.
+- [ ] EC2 instance: Amazon Linux 2023 x86_64, `t3a.large`, with the key pair
+      whose private half is stored in `EC2_SSH_PRIVATE_KEY`.
 - [ ] Root EBS: 30 GiB gp3, encrypted, Delete on termination enabled.
 - [ ] Data EBS: 100 GiB gp3, encrypted, same Availability Zone, Delete on
       termination disabled, tag `Backup=daily`.
 - [ ] IAM instance profile is attached and IMDSv2 is required.
 - [ ] Elastic IP is associated with the instance.
-- [ ] Security group inbound rules contain only TCP 443 from Cloudflare's
-      published ranges; there are no rules for 22, 80, 5432, 5050, 8000, or 8443.
-- [ ] Systems Manager → Fleet Manager shows the node Online.
-- [ ] Session Manager opens a shell without SSH.
+- [ ] Security group inbound rules contain no application ports at all: no 80,
+      443, 5432, 5050, 8000 or 8443. Public traffic arrives through the
+      Cloudflare Tunnel, which is outbound-only.
+- [ ] The only inbound rule is TCP 22, restricted to a controlled source range
+      or bastion for administration and GitHub Actions deployment.
+- [ ] Systems Manager → Fleet Manager shows the node Online (used for
+      Parameter Store access and break-glass sessions, not for deployment).
+- [ ] SSH from the controlled source works and the host-key fingerprint
+      matches the EC2 system log.
 - [ ] `lsblk -f` shows the data volume mounted at
       `/srv/techsara-chat-archive`.
 
 ## Application and edge
 
-- [ ] Docker Engine, Compose plugin, AWS CLI, OpenSSL, and curl are installed;
-      no host web server is required.
+- [ ] Docker Engine, Compose plugin v2.24+, AWS CLI, git and curl are
+      installed; no host web server or reverse proxy is required.
 - [ ] Private repository is at `/opt/techsara-chat-archive`.
-- [ ] Cloudflare A record points to the Elastic IP and is Proxied.
-- [ ] Origin CA files are root-owned mode `0440`, group 10001; neither is in the
-      repository and only the API container mounts them.
-- [ ] Cloudflare encryption mode is Full (strict).
-- [ ] Direct API TLS passes and only the intended hostname is accepted.
-- [ ] Compose reports PostgreSQL, API, worker, and backup healthy/running.
-- [ ] PostgreSQL has no published port; FastAPI publishes only TLS `443`; optional
-      pgAdmin is `127.0.0.1:5050` only under the `admin` profile.
+- [ ] A named Cloudflare Tunnel `techsara-chatgpt-production` exists and shows
+      Healthy with active connections.
+- [ ] The public hostname routes to `http://api:8000`, and its DNS record is a
+      Proxied CNAME to `<tunnel-id>.cfargotunnel.com`.
+- [ ] The tunnel token is a SecureString in SSM; the rendered
+      `/srv/techsara-chat-archive/secrets/cloudflared.env` is `400 root:root`.
+- [ ] Cloudflare encryption mode is Full (strict); Always Use HTTPS is on.
+- [ ] Only the intended hostname is accepted; a wrong Host header is rejected.
+- [ ] Compose reports PostgreSQL, API, worker, cloudflared and backup
+      healthy/running.
+- [ ] No application port is published on the host: `ss -lntp` shows nothing on
+      `0.0.0.0:8000`, `0.0.0.0:5432` or `0.0.0.0:5050`; optional pgAdmin is
+      `127.0.0.1:5050` only under the `admin` profile.
 
 ## Operational readiness
 

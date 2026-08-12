@@ -19,6 +19,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["development", "test", "staging", "production"]
 
+#: Connections kept aside for things that do not use the application pool:
+#: PostgreSQL's own superuser reserve, the nightly `pg_dump`, a `psql` session
+#: during an incident, and the optional pgAdmin profile.
+DATABASE_CONNECTION_RESERVE = 15
+
 
 def _read_secret_file(path: str | None) -> str | None:
     """Return the stripped contents of a secret file, or None when unusable."""
@@ -61,9 +66,17 @@ class Settings(BaseSettings):
         "postgresql+asyncpg://techsara_app:devonly_change_me@postgres:5432/techsara_chat_archive"
     )
     postgres_password_file: str | None = None
-    database_pool_size: int = 20
-    database_max_overflow: int = 20
+    # Bounded pooling: every API worker, the job worker and the optional poller
+    # hold their own pool, and the total must stay under PostgreSQL
+    # max_connections. See `max_expected_database_connections` and
+    # docs/CAPACITY.md.
+    database_pool_size: Annotated[int, Field(ge=1, le=100)] = 12
+    database_max_overflow: Annotated[int, Field(ge=0, le=100)] = 4
+    database_pool_timeout_seconds: Annotated[float, Field(gt=0, le=300)] = 30.0
+    database_pool_recycle_seconds: Annotated[int, Field(ge=60, le=86_400)] = 1800
+    database_pool_pre_ping: bool = True
     database_statement_timeout_ms: int = 30_000
+    postgres_max_connections: Annotated[int, Field(ge=10, le=10_000)] = 120
 
     # ---- AWS / S3 ---------------------------------------------------------
     aws_region: str = "us-east-1"
@@ -75,6 +88,10 @@ class Settings(BaseSettings):
     presigned_upload_ttl_seconds: Annotated[int, Field(ge=30, le=3600)] = 300
     presigned_download_ttl_seconds: Annotated[int, Field(ge=30, le=3600)] = 300
     max_attachment_bytes: int = 20 * 1024 * 1024
+    # Readiness probes must not issue a HeadBucket per request; the result is
+    # reused for this long. 0 disables caching (tests).
+    s3_health_cache_seconds: Annotated[int, Field(ge=0, le=3600)] = 60
+    s3_health_timeout_seconds: Annotated[float, Field(gt=0, le=30)] = 5.0
 
     # ---- Authentication ---------------------------------------------------
     oidc_issuer: str = "https://accounts.google.com"
@@ -107,6 +124,7 @@ class Settings(BaseSettings):
 
     # ---- Compliance poller ------------------------------------------------
     compliance_poll_enabled: bool = False
+    openai_workspace_id: str | None = None
     openai_compliance_base_url: str | None = None
     openai_compliance_log_path: str | None = None
     openai_compliance_files_path: str | None = None
@@ -208,6 +226,16 @@ class Settings(BaseSettings):
             problems.append("ALLOWED_EMAIL_DOMAINS must be set in production")
         if self.oidc_client_id in ("", "replace-me"):
             problems.append("OIDC_CLIENT_ID must be configured in production")
+        budget = self.postgres_max_connections - DATABASE_CONNECTION_RESERVE
+        if self.max_expected_database_connections > budget:
+            problems.append(
+                "Connection pools may exceed PostgreSQL max_connections: "
+                f"{self.max_expected_database_connections} possible vs {budget} usable "
+                f"(max_connections={self.postgres_max_connections}, "
+                f"reserve={DATABASE_CONNECTION_RESERVE}). "
+                "Lower DATABASE_POOL_SIZE/DATABASE_MAX_OVERFLOW/API_WORKERS "
+                "or raise POSTGRES_MAX_CONNECTIONS"
+            )
         if problems:
             raise ValueError("Unsafe production configuration: " + "; ".join(problems))
         return self
@@ -262,6 +290,20 @@ class Settings(BaseSettings):
             and self.openai_written_authorization_confirmed
             and not self.kill_switch_enabled
         )
+
+    @property
+    def max_expected_database_connections(self) -> int:
+        """Worst-case backend count if every pool is simultaneously saturated.
+
+        Each Gunicorn worker, the job worker and the optional compliance poller
+        run their own SQLAlchemy engine, so pools multiply by process count and
+        must be compared against PostgreSQL ``max_connections``.
+        """
+        per_process = self.database_pool_size + self.database_max_overflow
+        processes = self.api_workers + 1  # API workers + the job worker
+        if self.compliance_poll_enabled:
+            processes += 1
+        return per_process * processes
 
     @property
     def libpq_database_url(self) -> str:

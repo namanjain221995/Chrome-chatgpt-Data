@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from app.core.config import DATABASE_CONNECTION_RESERVE, Settings
 from app.core.crypto import (
     canonical_json,
     content_hash,
@@ -218,3 +219,74 @@ class TestLogRedaction:
 
 def test_sha256_hex_matches_known_vector() -> None:
     assert sha256_hex("abc") == ("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+
+
+class TestConnectionBudget:
+    """Pools multiply by process, so the budget must be enforced, not documented."""
+
+    @staticmethod
+    def _production(**overrides: object) -> Settings:
+        base: dict[str, object] = {
+            "environment": "production",
+            "dev_auth_enabled": False,
+            "jwt_secret": "x" * 48,
+            "config_signing_key": "y" * 48,
+            "database_url": "postgresql+asyncpg://u:strongpassword@postgres:5432/db",
+            "public_base_url": "https://archive.example.com",
+            "archive_hostname": "archive.example.com",
+            "allowed_email_domains": "example.com",
+            "oidc_client_id": "real-client-id",
+        }
+        base.update(overrides)
+        return Settings(**base)  # type: ignore[arg-type]
+
+    def test_worst_case_counts_every_process(self) -> None:
+        settings = self._production(
+            database_pool_size=10,
+            database_max_overflow=2,
+            api_workers=3,
+        )
+        # (10 + 2) * (3 API workers + 1 job worker), poller disabled.
+        assert settings.max_expected_database_connections == 48
+
+    def test_enabling_the_poller_adds_a_pool(self) -> None:
+        settings = self._production(
+            database_pool_size=10,
+            database_max_overflow=2,
+            api_workers=3,
+            compliance_poll_enabled=True,
+        )
+        assert settings.max_expected_database_connections == 60
+
+    def test_defaults_fit_inside_the_configured_maximum(self) -> None:
+        settings = self._production()
+        budget = settings.postgres_max_connections - DATABASE_CONNECTION_RESERVE
+        assert settings.max_expected_database_connections <= budget
+
+    def test_production_refuses_pools_that_could_exhaust_postgres(self) -> None:
+        with pytest.raises(ValueError, match="max_connections"):
+            self._production(
+                database_pool_size=40,
+                database_max_overflow=20,
+                api_workers=4,
+                postgres_max_connections=120,
+            )
+
+    def test_raising_max_connections_makes_the_same_pools_acceptable(self) -> None:
+        settings = self._production(
+            database_pool_size=40,
+            database_max_overflow=20,
+            api_workers=4,
+            postgres_max_connections=400,
+        )
+        assert settings.max_expected_database_connections == 300
+
+    def test_development_is_not_constrained(self) -> None:
+        """The guardrail is production-only; a laptop may oversubscribe freely."""
+        settings = Settings(
+            environment="development",
+            database_pool_size=50,
+            database_max_overflow=50,
+            api_workers=8,
+        )
+        assert settings.max_expected_database_connections == 900

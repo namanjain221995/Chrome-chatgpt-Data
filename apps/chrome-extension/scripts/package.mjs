@@ -138,7 +138,17 @@ if (files.length === 0) {
 const zip = buildZip(files);
 mkdirSync(outputDir, { recursive: true });
 
-const zipName = `techsara-chatgpt-archive-extension-${manifest.version}.zip`;
+// CI names the artifact after the commit so a downloaded ZIP is traceable to
+// the source that built it; a release names it after the tag. Locally it falls
+// back to the manifest version.
+const artifactId = (process.env.EXTENSION_ARTIFACT_ID || manifest.version)
+  .trim()
+  .replace(/[^A-Za-z0-9._-]/g, '-');
+if (!artifactId) {
+  console.error('EXTENSION_ARTIFACT_ID resolved to an empty name');
+  process.exit(1);
+}
+const zipName = `techsara-chatgpt-extension-${artifactId}.zip`;
 const zipPath = join(outputDir, zipName);
 writeFileSync(zipPath, zip);
 
