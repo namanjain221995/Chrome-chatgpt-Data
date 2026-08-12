@@ -87,6 +87,13 @@ third-party images while retaining the already-built local backend image. The
 deprecated Node 20 checkout/upload action majors reported by that run were also
 updated to their current Node 24 releases. A replacement run is pending.
 
+The replacement run `31637210454` confirmed the image pull repair, then exposed
+a Compose-version difference: its global `--wait` rejected the deliberately
+healthcheck-free worker even though that worker was running. The production
+smoke now waits explicitly for healthy API/PostgreSQL/pgAdmin states and a
+running worker, which tests the intended contract without depending on that
+Compose-version behavior. A further replacement run is pending.
+
 ## External steps still intentionally manual
 
 - Secure and lifecycle-configure the existing S3 bucket.

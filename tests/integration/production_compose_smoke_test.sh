@@ -72,8 +72,27 @@ printf 'postgres:5432:*:techsara_app:%s\n' "${pgpass_password}" > "${DATA_ROOT}/
 chmod 0444 "${DATA_ROOT}/secrets/"*
 
 "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
-"${COMPOSE[@]}" --profile admin up -d --pull missing --wait --wait-timeout 180 \
+"${COMPOSE[@]}" --profile admin up -d --pull missing \
   postgres api worker pgadmin
+
+healthy=0
+for _ in $(seq 1 90); do
+  api_id="$("${COMPOSE[@]}" ps -q api)"
+  postgres_id="$("${COMPOSE[@]}" ps -q postgres)"
+  pgadmin_id="$("${COMPOSE[@]}" ps -q pgadmin)"
+  worker_id="$("${COMPOSE[@]}" ps -q worker)"
+  api_health="$(docker inspect -f '{{.State.Health.Status}}' "${api_id}" 2>/dev/null || true)"
+  postgres_health="$(docker inspect -f '{{.State.Health.Status}}' "${postgres_id}" 2>/dev/null || true)"
+  pgadmin_state="$(docker inspect -f '{{.State.Status}}' "${pgadmin_id}" 2>/dev/null || true)"
+  worker_state="$(docker inspect -f '{{.State.Status}}' "${worker_id}" 2>/dev/null || true)"
+  if [ "${api_health}" = healthy ] && [ "${postgres_health}" = healthy ] \
+      && [ "${pgadmin_state}" = running ] && [ "${worker_state}" = running ]; then
+    healthy=1
+    break
+  fi
+  sleep 2
+done
+test "${healthy}" -eq 1
 
 curl -fkSs -H 'Host: archive.example.com' \
   https://127.0.0.1:${HTTPS_PORT}/health/ready | grep -q '"status":"ok"'
