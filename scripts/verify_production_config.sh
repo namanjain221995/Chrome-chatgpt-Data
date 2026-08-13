@@ -25,9 +25,29 @@ export ALLOWED_EMAIL_DOMAINS="${ALLOWED_EMAIL_DOMAINS:-example.com}"
 export MANAGED_WORKSPACE_LABEL="${MANAGED_WORKSPACE_LABEL:-Managed Workspace}"
 export PGADMIN_DEFAULT_EMAIL="${PGADMIN_DEFAULT_EMAIL:-dba@example.com}"
 
+# `docker compose config` resolves env_file into the service environment. Point
+# DATA_ROOT at an empty directory so the real cloudflared.env is not read: the
+# topology check needs the structure, never the secrets, and resolving them
+# would both write the tunnel token to a temporary file and make the
+# "no inlined token" assertion below fire on the legitimate mechanism.
+scratch_root="$(mktemp -d)"
 config_file="$(mktemp)"
-trap 'rm -f "${config_file}"' EXIT
+trap 'rm -f "${config_file}"; rm -rf "${scratch_root}"' EXIT
+export DATA_ROOT="${scratch_root}"
+
 docker compose -f compose.prod.yaml --profile '*' config --format json > "${config_file}"
+
+# The "no inlined token" property belongs to the file's source text, not to the
+# resolved output: a token supplied through env_file is correct and shows up in
+# the resolved environment, while a token written into the YAML is not.
+if grep -nE '^[[:space:]]*(TUNNEL_TOKEN|- *--token)' compose.prod.yaml; then
+  echo "the tunnel token must never be written into compose.prod.yaml" >&2
+  exit 1
+fi
+grep -q 'secrets/cloudflared.env' compose.prod.yaml || {
+  echo "cloudflared must take its token from the root-owned env file" >&2
+  exit 1
+}
 
 python3 - "${config_file}" <<'PY'
 import json
@@ -94,6 +114,8 @@ assert "--token" not in tunnel_command, (
 assert set(tunnel["networks"]) == {"egress"}, (
     "the tunnel must reach the API and the internet, but never PostgreSQL"
 )
+# DATA_ROOT points at an empty directory here, so a TUNNEL_TOKEN in the
+# resolved environment could only have come from the YAML itself.
 assert "TUNNEL_TOKEN" not in (tunnel.get("environment") or {}), (
     "the tunnel token must not be inlined into the compose environment"
 )

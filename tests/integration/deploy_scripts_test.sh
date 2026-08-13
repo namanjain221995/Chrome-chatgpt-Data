@@ -136,6 +136,29 @@ else
   bad "the workflow runs the instance's existing script without syncing first"
 fi
 
+# --- the topology check must survive a real tunnel token ---------------------
+# `docker compose config` resolves env_file into the environment, so once the
+# host had a real cloudflared.env the check tripped its own "no inlined token"
+# assertion and rolled the deployment back. It must be hermetic.
+tunnel_root="${WORK}/data-root"
+mkdir -p "${tunnel_root}/secrets"
+printf 'TUNNEL_TOKEN=eyJhIjoiTEST_ONLY_NOT_A_REAL_TOKEN\n' > "${tunnel_root}/secrets/cloudflared.env"
+if DATA_ROOT="${tunnel_root}" bash scripts/verify_production_config.sh >/dev/null 2>&1; then
+  ok "topology check passes when a tunnel token file exists on the host"
+else
+  bad "topology check fails once the host has a real cloudflared.env"
+fi
+
+# It must still reject a token written into the compose file itself.
+inlined="${WORK}/compose-inlined.yaml"
+sed 's/^    env_file:/    environment:\n      TUNNEL_TOKEN: eyJhIjoiINLINED\n    env_file:/' \
+  compose.prod.yaml > "${inlined}"
+if grep -qE '^[[:space:]]*(TUNNEL_TOKEN|- *--token)' "${inlined}"; then
+  ok "an inlined tunnel token is detectable in the compose source"
+else
+  bad "could not construct the inlined-token case"
+fi
+
 # --- no script may silently swallow a failed pipeline -------------------------
 # `cmd | tail` on a possibly-absent file is the exact shape of the bug above.
 suspects="$(grep -rn 'sed -n .*2>/dev/null | tail' scripts/ || true)"
