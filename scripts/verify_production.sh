@@ -46,7 +46,12 @@ COMPOSE=(docker compose --env-file "${ENV_FILE}" -f compose.prod.yaml)
 # ingress. Treat the tunnel and public URL as expected-absent in that case
 # rather than reporting two failures for a deliberate state.
 RELEASE_FILE="${APP_DIR}/deploy/current-release"
-PUBLIC_INGRESS="$(sed -n 's/^PUBLIC_INGRESS=//p' "${RELEASE_FILE}" 2>/dev/null | tail -1)"
+# Same care as the deploy script: a missing release file must not abort the
+# verification through `pipefail`.
+PUBLIC_INGRESS=""
+if [ -f "${RELEASE_FILE}" ]; then
+  PUBLIC_INGRESS="$(sed -n 's/^PUBLIC_INGRESS=//p' "${RELEASE_FILE}" | tail -1)"
+fi
 PUBLIC_INGRESS="${PUBLIC_INGRESS:-cloudflare-tunnel}"
 
 echo "Production verification"

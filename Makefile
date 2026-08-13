@@ -178,6 +178,10 @@ compose-config: ## Validate development and production Compose files
 production-config:
 	@bash scripts/verify_production_config.sh
 
+.PHONY: test-deploy-scripts
+test-deploy-scripts: ## Behavioural tests for the deployment scripts
+	@bash tests/integration/deploy_scripts_test.sh
+
 .PHONY: compose-up compose-down compose-logs test-compose test-production-compose
 compose-up:
 	@docker compose -f compose.yaml up -d --build --wait
@@ -244,6 +248,7 @@ verify: ## Run the complete local CI gate
 	@$(MAKE) --no-print-directory extension-build
 	@$(MAKE) --no-print-directory extension-zip
 	@$(MAKE) --no-print-directory compose-config
+	@$(MAKE) --no-print-directory test-deploy-scripts
 	@$(MAKE) --no-print-directory security-check
 	@$(MAKE) --no-print-directory docs-check
 	@$(MAKE) --no-print-directory build-image

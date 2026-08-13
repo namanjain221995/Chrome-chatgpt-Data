@@ -206,6 +206,8 @@ jobs:
           bash scripts/verify_production_config.sh
       - name: Shell syntax, shellcheck and workflow lint
         run: make lint-shell lint-workflows
+      - name: Deployment script behaviour
+        run: bash tests/integration/deploy_scripts_test.sh
       - name: Production Compose smoke (tunnel topology, secrets, private pgAdmin)
         run: bash tests/integration/production_compose_smoke_test.sh
       - name: Development Compose smoke (migrations, ingest, restart, restore)

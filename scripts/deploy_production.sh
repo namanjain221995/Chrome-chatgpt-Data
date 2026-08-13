@@ -78,7 +78,14 @@ COMPOSE=(docker compose --env-file "${ENV_FILE}" -f compose.prod.yaml)
 # ---------------------------------------------------------------------------
 install -d -o root -g root -m 0755 "${RELEASE_DIR}"
 
-release_value() { sed -n "s/^$1=//p" "${2:-${CURRENT_RELEASE}}" 2>/dev/null | tail -n 1; }
+# Reading a release record must tolerate its absence: the first deployment on a
+# host has no current-release file, and `sed` exits 2 on a missing file, which
+# `set -o pipefail` would turn into an aborted deployment.
+release_value() {
+  local key="$1" file="${2:-${CURRENT_RELEASE}}"
+  [ -f "${file}" ] || return 0
+  sed -n "s/^${key}=//p" "${file}" | tail -n 1
+}
 
 ROLLBACK_SHA="$(release_value GIT_SHA)"
 if [ -z "${ROLLBACK_SHA}" ]; then
