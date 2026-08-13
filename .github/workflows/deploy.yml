@@ -92,11 +92,17 @@ jobs:
           sudo docker info >/dev/null 2>&1 || { echo "FATAL Docker is not usable"; fatal=1; }
           command -v aws >/dev/null 2>&1 || { echo "FATAL the AWS CLI is not installed"; fatal=1; }
 
+          # The tunnel token is what makes the archive publicly reachable. It is
+          # deliberately NOT in the core list: without it the stack can still be
+          # deployed and run internally, so a missing tunnel downgrades the
+          # deployment instead of blocking it.
+          tunnel=1
+
           if command -v aws >/dev/null 2>&1; then
             aws sts get-caller-identity --region us-east-1 >/dev/null 2>&1 \
               || { echo "NOTREADY the EC2 instance role is not usable"; notready=1; }
             for name in postgres_password postgres_user postgres_db jwt_secret \
-                        config_signing_key cloudflare_tunnel_token public_base_url \
+                        config_signing_key public_base_url \
                         oidc_client_id oidc_required_hd allowed_email_domains \
                         managed_workspace_label; do
               # Names only: no value is ever read here, decrypted or printed.
@@ -104,6 +110,9 @@ jobs:
                 --region us-east-1 --query 'Parameter.Name' --output text >/dev/null 2>&1 \
                 || { echo "NOTREADY missing SSM parameter /techsara-chat-archive/${name}"; notready=1; }
             done
+            aws ssm get-parameter --name /techsara-chat-archive/cloudflare_tunnel_token \
+              --region us-east-1 --query 'Parameter.Name' --output text >/dev/null 2>&1 \
+              || { echo "NOTUNNEL no cloudflare_tunnel_token yet; deploying without public ingress"; tunnel=0; }
           fi
 
           [ -d /srv/techsara-chat-archive ] \
@@ -112,6 +121,7 @@ jobs:
           echo "HOST $(hostname)"
           echo "FATAL_COUNT ${fatal}"
           echo "NOTREADY_COUNT ${notready}"
+          echo "TUNNEL ${tunnel}"
           REMOTE
           ssh_status=$?
           set -e
@@ -130,8 +140,18 @@ jobs:
             echo "The instance is reachable but not configured yet; skipping the deployment."
             exit 0
           fi
+
           echo "ready=true" >> "$GITHUB_OUTPUT"
-          echo "preflight passed; the instance is configured"
+          if [ "$(sed -n 's/^TUNNEL //p' /tmp/preflight.txt)" = "1" ]; then
+            echo "tunnel=true" >> "$GITHUB_OUTPUT"
+            echo "preflight passed; deploying with public ingress"
+          else
+            # Deploy anyway: the backend runs, it is simply not yet reachable
+            # from the internet. Adding the token later upgrades it automatically.
+            grep '^NOTUNNEL ' /tmp/preflight.txt | sed 's/^NOTUNNEL /::warning::/'
+            echo "tunnel=false" >> "$GITHUB_OUTPUT"
+            echo "preflight passed; deploying WITHOUT public ingress"
+          fi
 
       - name: Deploy
         id: deploy
@@ -139,6 +159,7 @@ jobs:
         env:
           DEPLOY_SHA: ${{ steps.target.outputs.sha }}
           ACTOR: ${{ github.actor }}
+          WITH_TUNNEL: ${{ steps.preflight.outputs.tunnel }}
         run: |
           set -Eeuo pipefail
           # Reduced to a safe character set before it is interpolated into the
@@ -150,13 +171,20 @@ jobs:
           # migrates, recreates services, health-checks and rolls back on
           # failure. Nothing secret crosses this connection.
           #
-          # The here-document delimiter is deliberately unquoted: both values
+          # Without a tunnel token the backend is still deployed and verified;
+          # it simply has no public ingress until the token exists.
+          deploy_flags=""
+          if [ "${WITH_TUNNEL}" != "true" ]; then
+            deploy_flags="--without-tunnel"
+          fi
+
+          # The here-document delimiter is deliberately unquoted: these values
           # must be substituted here, by the runner, because the instance has no
-          # idea which commit was pushed. Both are constrained above.
+          # idea which commit was pushed. All three are constrained above.
           # shellcheck disable=SC2087
           ssh ec2 'sudo bash -Eeuo pipefail -s' <<REMOTE
           export DEPLOY_ACTOR='${safe_actor}'
-          exec /opt/techsara-chat-archive/scripts/deploy_production.sh '${DEPLOY_SHA}'
+          exec /opt/techsara-chat-archive/scripts/deploy_production.sh ${deploy_flags} '${DEPLOY_SHA}'
           REMOTE
 
       - name: Verify the deployed host
@@ -178,6 +206,7 @@ jobs:
         env:
           DEPLOY_SHA: ${{ steps.target.outputs.sha }}
           READY: ${{ steps.preflight.outputs.ready }}
+          WITH_TUNNEL: ${{ steps.preflight.outputs.tunnel }}
           RESULT: ${{ steps.deploy.outcome }}
         run: |
           {
@@ -187,6 +216,7 @@ jobs:
             echo "| --- | --- |"
             echo "| Requested commit | \`${DEPLOY_SHA}\` |"
             echo "| Instance configured | ${READY:-unknown} |"
+            echo "| Public ingress | $([ "${WITH_TUNNEL}" = "true" ] && echo "Cloudflare Tunnel" || echo "none yet") |"
             echo "| Deploy step | ${RESULT:-skipped} |"
             echo "| Triggered by | ${{ github.actor }} |"
             echo "| Event | ${{ github.event_name }} |"
@@ -206,6 +236,15 @@ jobs:
               echo "See docs/CLOUDFLARE_TUNNEL_SETUP.md and docs/GITHUB_SECRETS.md,"
               echo "then re-run this workflow."
             else
+              if [ "${WITH_TUNNEL}" != "true" ]; then
+                echo "### Deployed without public ingress"
+                echo
+                echo "The backend is running and verified on the instance, but it is"
+                echo "not reachable from the internet: no Cloudflare tunnel token is"
+                echo "in SSM yet. Add it and the next deployment upgrades itself."
+                echo "See docs/CLOUDFLARE_TUNNEL_SETUP.md."
+                echo
+              fi
               echo "### Recorded release on the instance"
               echo '```'
               cat /tmp/current-release.txt 2>/dev/null || echo "unavailable"

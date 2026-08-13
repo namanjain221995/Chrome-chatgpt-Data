@@ -32,6 +32,21 @@ git push origin main
 A pull request runs `ci.yml` alone. It never touches the production
 environment, so a fork cannot obtain a deployment secret.
 
+### What the deployment does when configuration is incomplete
+
+The preflight separates configuration that is needed to *run* from
+configuration that is needed to be *publicly reachable*:
+
+| State | Result |
+| --- | --- |
+| Core SSM parameters and `/srv/techsara-chat-archive` present, tunnel token present | Full deployment, public ingress verified end to end. |
+| Core present, **no tunnel token** | Deployment proceeds with `--without-tunnel`. PostgreSQL, the API, the worker and the backup run and are health-checked; there is no public ingress, and the run says so. Adding the token later upgrades the next deployment automatically — no code change. |
+| Core missing | Skipped, listing exactly which parameters to create. Nothing on the host changes. |
+| Host broken (no checkout, no sudo, no Docker, no AWS CLI) | Hard failure. |
+
+So `git push` deploys as much as the environment currently allows, and never
+leaves the host half-applied.
+
 ## Workflows
 
 | File | Trigger | What it does |
@@ -127,6 +142,8 @@ manual path cannot deploy an unreviewed branch.
 | Migration fails | Aborts; a pre-migration backup was already taken. Application rolls back, schema stays at whatever the migration committed. |
 | Health check fails | Application rolls back to the previous SHA; schema untouched. |
 | Public URL fails on the very first deployment | Reported as a warning, because the Cloudflare hostname route may not exist yet. On every later deployment it is a hard failure. |
+| No Cloudflare tunnel token in SSM | The backend is still deployed and verified; it simply has no public ingress. Adding the token upgrades the next deployment automatically. |
+| Core SSM parameters missing | Skipped with the exact list of what to create. Nothing on the host is changed. |
 
 See [ROLLBACK.md](ROLLBACK.md) for what rollback does and does not undo.
 
