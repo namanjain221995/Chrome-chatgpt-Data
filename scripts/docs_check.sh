@@ -105,6 +105,8 @@ RETIRED=(
   'verify_deployment\.sh'
   'deploy_bundle\.sh'
   'restore_test_local\.sh'
+  'probe_compliance_api\.py'
+  '\.env\.compliance'
   'PRODUCTION_DEPLOYMENT\.md'
   'BACKUP_AND_RESTORE\.md'
   'SCALING_250_USERS\.md'

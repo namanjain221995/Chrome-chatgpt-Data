@@ -113,70 +113,6 @@ retention decision.
 Alert on: `lag_seconds` above one hour, `consecutive_errors` ≥ 3, or
 `last_success_at` older than two poll intervals.
 
-## Probing it first
-
-Before configuring the poller, find out what the feed actually returns. The
-production adapter cannot be configured sensibly without knowing whether the
-log carries message content or only event metadata, and that is a question only
-your documentation and a real request can answer.
-
-```bash
-cp .env.compliance.example .env.compliance   # fill in base URL, log path, token
-python3 scripts/probe_compliance_api.py --describe-only
-```
-
-`--describe-only` prints the response structure and saves nothing. Drop it to
-write the raw pages under `data/compliance-probe/<timestamp>/` for inspection;
-that directory is gitignored and holds real conversation records, so delete it
-when you are done.
-
-The probe reports the item keys and flags whether any content-bearing field is
-present, which decides the architecture:
-
-* **content present** — the feed alone can populate the archive, and the
-  browser extension becomes an optional live-capture supplement;
-* **metadata only** — the feed provides coverage and completeness, and message
-  bodies come either from a second documented request
-  (`OPENAI_COMPLIANCE_FILES_PATH`) or from the extension.
-
-It distinguishes the failure modes that otherwise look identical: `404` means
-the path is wrong, not that the workspace is empty; `401`/`403` means the
-credential was rejected. Neither is ever reported as "no data".
-
-### If you do not have the documented path yet
-
-The probe can test candidates and report what each one answers, which is safe
-precisely because it separates 404 from 200:
-
-```bash
-python3 scripts/probe_compliance_api.py \
-  --try-paths '/v1/compliance/log,/v1/organization/audit_logs,/v1/conversations'
-```
-
-Nothing is saved in this mode and nothing is assumed. A path that answers 200
-is a candidate, not a confirmation: check it against the documentation before
-it goes into SSM.
-
-Read the status codes precisely, because on this API they mean different
-things:
-
-| Status | Meaning |
-| --- | --- |
-| `200` | The endpoint exists and answered. |
-| `405` *"Invalid method for URL"* | **The path exists**; only the verb is wrong. The probe retries it as POST automatically. This is the strongest positive signal short of a 200. |
-| `404` *"Invalid URL"* | The path genuinely does not exist. |
-| `401` with `rejected_by_access_enforcement` / `no_matching_rule` | The token was recognised but is **not authorised for that endpoint**. A different key, or a different scope, is needed -- not a different path. |
-| `401` with `invalid_api_key` | The credential itself is wrong. |
-
-Endpoints that take a query document need a body:
-
-```bash
-python3 scripts/probe_compliance_api.py \
-  --path '/<documented-path>' --method POST --body '{}' --describe-only
-``` A guessed path in the *probe* is harmless because a wrong one
-is visible; a guessed path in the *poller* is not, because a 404 there is
-indistinguishable from an idle feed.
-
 ## What was already investigated (2026-08-13)
 
 Recorded so the next person does not repeat it.
@@ -201,6 +137,15 @@ was not self-serve for this workspace. Obtain it through the account team
 together with the documentation; do not continue probing hosts and paths, which
 is guesswork against a third party's infrastructure and cannot produce a
 trustworthy configuration.
+
+The exploratory probe used to establish the above has been removed: it had
+served its purpose, and a tool that fires guessed requests at a third-party API
+is not something to leave lying in a production repository. The adapter, the
+poller and the `compliance` Compose profile all remain, configured and idle,
+ready for the day the documented values exist.
+
+Until then, the Chrome extension is the archive's capture path. See
+[CHROME_EXTENSION.md](CHROME_EXTENSION.md).
 
 ## Enabling it
 
