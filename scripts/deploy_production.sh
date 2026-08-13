@@ -65,11 +65,18 @@ cd "${APP_DIR}" || die "application directory not found: ${APP_DIR}"
 # ---------------------------------------------------------------------------
 # One deployment at a time
 # ---------------------------------------------------------------------------
-exec 9>"${LOCK_FILE}"
-if ! flock -w "${LOCK_WAIT_SECONDS}" 9; then
-  die "another deployment has held ${LOCK_FILE} for more than ${LOCK_WAIT_SECONDS}s"
+# DEPLOY_HAS_LOCK is set only when this process was exec'd by an earlier stage
+# of the same deployment, which still holds fd 9. A flock survives exec, so
+# re-opening the file here would briefly release the lock for no reason.
+if [ "${DEPLOY_HAS_LOCK:-0}" = "1" ]; then
+  log "continuing under the deployment lock held by the previous stage"
+else
+  exec 9>"${LOCK_FILE}"
+  if ! flock -w "${LOCK_WAIT_SECONDS}" 9; then
+    die "another deployment has held ${LOCK_FILE} for more than ${LOCK_WAIT_SECONDS}s"
+  fi
+  log "acquired deployment lock"
 fi
-log "acquired deployment lock"
 
 COMPOSE=(docker compose --env-file "${ENV_FILE}" -f compose.prod.yaml)
 
@@ -126,16 +133,34 @@ trap 'on_error "${LINENO}"' ERR
 # ---------------------------------------------------------------------------
 # 1. Check out the exact commit
 # ---------------------------------------------------------------------------
-log "fetching ${GIT_REMOTE}"
 git config --global --add safe.directory "${APP_DIR}" 2>/dev/null || true
-git fetch --prune "${GIT_REMOTE}" '+refs/heads/*:refs/remotes/'"${GIT_REMOTE}"'/*' --tags
 
-git cat-file -e "${DEPLOY_SHA}^{commit}" 2>/dev/null \
-  || die "commit ${DEPLOY_SHA} does not exist on ${GIT_REMOTE}"
+if [ "$(git rev-parse HEAD 2>/dev/null || true)" != "${DEPLOY_SHA}" ]; then
+  log "fetching ${GIT_REMOTE}"
+  git fetch --prune "${GIT_REMOTE}" '+refs/heads/*:refs/remotes/'"${GIT_REMOTE}"'/*' --tags
 
-log "checking out ${DEPLOY_SHA}"
-git reset --hard "${DEPLOY_SHA}"
-chmod +x "${APP_DIR}/scripts/"*.sh
+  git cat-file -e "${DEPLOY_SHA}^{commit}" 2>/dev/null \
+    || die "commit ${DEPLOY_SHA} does not exist on ${GIT_REMOTE}"
+
+  log "checking out ${DEPLOY_SHA}"
+  git reset --hard "${DEPLOY_SHA}"
+  chmod +x "${APP_DIR}/scripts/"*.sh
+
+  # This process started from the *previous* release's copy of this script.
+  # Now that the requested commit is checked out, hand over to its deployment
+  # script, so a deployment always runs the code it is deploying rather than
+  # applying it one release late. The flock on fd 9 survives exec, so the
+  # handover cannot be raced by another deployment.
+  log "handing over to the deployment script from ${DEPLOY_SHA}"
+  export DEPLOY_HAS_LOCK=1
+  if [ "${WITH_TUNNEL}" = true ]; then
+    exec "${APP_DIR}/scripts/deploy_production.sh" "${DEPLOY_SHA}"
+  else
+    exec "${APP_DIR}/scripts/deploy_production.sh" --without-tunnel "${DEPLOY_SHA}"
+  fi
+fi
+
+log "checkout is already at ${DEPLOY_SHA}"
 
 # ---------------------------------------------------------------------------
 # 2. Configuration and secrets from SSM

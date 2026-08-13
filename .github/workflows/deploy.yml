@@ -153,6 +153,27 @@ jobs:
             echo "preflight passed; deploying WITHOUT public ingress"
           fi
 
+      # Bring the checkout to the deployed commit before running anything from
+      # it. Without this the instance runs the *previous* release's deployment
+      # script, so a fix to that script can never apply itself -- a broken
+      # deploy script would be unfixable through the pipeline.
+      - name: Sync the checkout to the deployed commit
+        if: steps.preflight.outputs.ready == 'true'
+        env:
+          DEPLOY_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          # shellcheck disable=SC2087
+          ssh ec2 'sudo bash -Eeuo pipefail -s' <<REMOTE
+          cd /opt/techsara-chat-archive
+          git config --global --add safe.directory /opt/techsara-chat-archive 2>/dev/null || true
+          git fetch --prune origin '+refs/heads/*:refs/remotes/origin/*' --tags
+          git cat-file -e '${DEPLOY_SHA}^{commit}'
+          git reset --hard '${DEPLOY_SHA}'
+          chmod +x scripts/*.sh
+          echo "checkout is at \$(git rev-parse HEAD)"
+          REMOTE
+
       - name: Deploy
         id: deploy
         if: steps.preflight.outputs.ready == 'true'

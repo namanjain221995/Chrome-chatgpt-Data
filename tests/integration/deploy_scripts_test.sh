@@ -112,6 +112,28 @@ else
   bad "deploy no longer validates the commit SHA"
 fi
 
+# --- the deployment runs the code it deploys ---------------------------------
+# The script starts from the previous release's copy of itself. It must sync the
+# checkout and hand over, or a fix to the deployment script can only ever take
+# effect one deployment late -- and a broken one is unfixable through CI.
+if grep -q 'exec "${APP_DIR}/scripts/deploy_production.sh"' scripts/deploy_production.sh; then
+  ok "deploy hands over to the deployed commit's own script"
+else
+  bad "deploy does not hand over after checking out the requested commit"
+fi
+
+if grep -q 'DEPLOY_HAS_LOCK' scripts/deploy_production.sh; then
+  ok "deploy carries its lock across the handover instead of re-taking it"
+else
+  bad "deploy would release and re-take its lock across the handover"
+fi
+
+if grep -q 'Sync the checkout to the deployed commit' .github/workflows/deploy.yml; then
+  ok "the workflow syncs the checkout before running anything from it"
+else
+  bad "the workflow runs the instance's existing script without syncing first"
+fi
+
 # --- no script may silently swallow a failed pipeline -------------------------
 # `cmd | tail` on a possibly-absent file is the exact shape of the bug above.
 suspects="$(grep -rn 'sed -n .*2>/dev/null | tail' scripts/ || true)"
