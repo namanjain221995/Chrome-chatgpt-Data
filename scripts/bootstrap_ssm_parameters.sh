@@ -47,6 +47,8 @@ Options:
                           can start; employee sign-in will not work until it
                           is replaced.
   --prompt-tunnel-token   Prompt (silently) for the Cloudflare Tunnel token.
+                          Implied when the token is absent and the script is
+                          run interactively, so it cannot be forgotten.
   --overwrite             Replace existing *configuration* values. Generated
                           secrets are never touched by this flag.
   --rotate-secrets        Also regenerate the machine secrets. Read the
@@ -191,6 +193,14 @@ put kill_switch_enabled "false" String
 put compliance_poll_enabled "false" String
 
 # --- Cloudflare tunnel token -------------------------------------------------
+# Prompt whenever the token is missing and there is a terminal to prompt on.
+# Requiring --prompt-tunnel-token made forgetting the flag a silent failure:
+# the script reported success and the archive stayed unreachable.
+if [ "${PROMPT_TUNNEL_TOKEN}" -eq 0 ] && [ -t 0 ] && ! exists cloudflare_tunnel_token; then
+  log "no cloudflare_tunnel_token is stored yet"
+  PROMPT_TUNNEL_TOKEN=1
+fi
+
 if [ "${PROMPT_TUNNEL_TOKEN}" -eq 1 ]; then
   printf 'Cloudflare Tunnel token (input hidden, leave empty to skip): ' >&2
   read -rs tunnel_token
