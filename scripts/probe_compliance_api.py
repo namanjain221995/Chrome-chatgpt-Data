@@ -155,6 +155,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV_FILE)
     parser.add_argument(
+        "--base-url",
+        help="override OPENAI_COMPLIANCE_BASE_URL for this run",
+    )
+    parser.add_argument(
         "--path",
         help="override OPENAI_COMPLIANCE_LOG_PATH for this run",
     )
@@ -197,6 +201,8 @@ def main() -> int:
     env = {**load_env_file(args.env_file), **os.environ}
 
     required = list(REQUIRED)
+    if args.base_url:
+        required = [name for name in required if name != "OPENAI_COMPLIANCE_BASE_URL"]
     if args.path or args.try_paths:
         # The path is supplied on the command line for this run.
         required = [name for name in required if name != "OPENAI_COMPLIANCE_LOG_PATH"]
@@ -217,7 +223,7 @@ def main() -> int:
         )
         return 2
 
-    base = env["OPENAI_COMPLIANCE_BASE_URL"].rstrip("/")
+    base = (args.base_url or env.get("OPENAI_COMPLIANCE_BASE_URL", "")).rstrip("/")
     path = "/" + (args.path or env.get("OPENAI_COMPLIANCE_LOG_PATH", "")).lstrip("/")
     token = env["OPENAI_COMPLIANCE_API_KEY"]
 
