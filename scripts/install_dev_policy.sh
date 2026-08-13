@@ -74,17 +74,14 @@ case "${BROWSER}" in
   chrome)   POLICY_DIRS=("${CHROME_DIRS[@]}") ;;
   chromium) POLICY_DIRS=("${CHROMIUM_DIRS[@]}") ;;
   "")
-    # Write wherever a browser is actually installed. Writing to all of them is
-    # harmless and avoids "the policy is not applying" caused by guessing wrong.
-    for candidate in "${CHROME_DIRS[@]}" "${CHROMIUM_DIRS[@]}"; do
-      parent="$(dirname "$(dirname "${candidate}")")"
-      [ -d "${parent}" ] && POLICY_DIRS+=("${candidate}")
-    done
-    if [ "${#POLICY_DIRS[@]}" -eq 0 ]; then
-      die "no Chrome or Chromium installation found. Run this on the machine
-       running the browser, not on a server or in CloudShell. Force a location
-       with --browser chrome|chromium if you know better."
-    fi
+    # Write to every known location, creating the directory if needed.
+    #
+    # Which directory a build actually reads is not reliably discoverable:
+    # Ubuntu's snap Chromium in particular does not necessarily read the one
+    # that exists on disk. A policy file in a directory no browser consults is
+    # inert, whereas a missing one costs an hour of "why is it not applying",
+    # so breadth wins.
+    POLICY_DIRS=("${CHROME_DIRS[@]}" "${CHROMIUM_DIRS[@]}")
     ;;
   *) die "--browser must be chrome or chromium" ;;
 esac
@@ -145,6 +142,15 @@ Next:
      The 3rdparty entry should be listed. Press "Reload policies" if not.
   3. Open the extension's service worker console from chrome://extensions and
      confirm it fetches the runtime configuration.
+
+If chrome://policy lists the extension by name but says "No policies set", the
+browser found the extension's schema and did not read any of these files. Then:
+  * confirm the extension id at chrome://extensions still matches the one
+    above -- an unpacked extension's id changes if its directory moves;
+  * make sure the browser really restarted (the snap keeps a process alive:
+    pkill -f chromium);
+  * check which build is running (snap list chromium; which chromium) and pass
+    --browser to target it explicitly.
 
 Setting "enabled": true here does NOT enable capture. The server decides that,
 and it currently answers capture_active=false. This policy only tells the
