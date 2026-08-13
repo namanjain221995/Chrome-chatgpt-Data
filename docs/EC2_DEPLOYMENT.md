@@ -71,8 +71,10 @@ The EC2 instance role can *read* Parameter Store but not write to it, so run
 this from **AWS CloudShell** or a workstation with administrator credentials:
 
 ```bash
-git clone https://github.com/namanjain221995/Chrome-chatgpt-Data.git /tmp/tsa
-cd /tmp/tsa
+# CloudShell wipes /tmp between sessions and persists only $HOME.
+rm -rf ~/techsara-deploy
+git clone https://github.com/namanjain221995/Chrome-chatgpt-Data.git ~/techsara-deploy
+cd ~/techsara-deploy
 ./scripts/bootstrap_ssm_parameters.sh --domain <company-domain>
 ```
 
@@ -81,6 +83,12 @@ config signing key, pgAdmin password) with `openssl`, never prints them, and
 derives the public URL, hosted domain and allowed email domains from
 `--domain`. It is idempotent: an existing parameter is kept unless you pass
 `--overwrite`, so re-running never rotates a password by accident.
+
+Never pass a secret as a command-line argument: it lands in shell history and
+in the process list. `--prompt-tunnel-token` reads the token with the input
+hidden. If a token has already been typed into a shell, treat it as
+compromised, rotate it, and clear the history (in CloudShell,
+`rm -f ~/.bash_history` and start a new session, since `$HOME` persists).
 
 Two values it will not invent:
 
