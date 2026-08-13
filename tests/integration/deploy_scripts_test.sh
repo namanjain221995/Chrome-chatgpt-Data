@@ -116,6 +116,8 @@ fi
 # The script starts from the previous release's copy of itself. It must sync the
 # checkout and hand over, or a fix to the deployment script can only ever take
 # effect one deployment late -- and a broken one is unfixable through CI.
+# Literal source text, not an expansion: the single quotes are deliberate.
+# shellcheck disable=SC2016
 if grep -q 'exec "${APP_DIR}/scripts/deploy_production.sh"' scripts/deploy_production.sh; then
   ok "deploy hands over to the deployed commit's own script"
 else
