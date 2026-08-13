@@ -177,6 +177,31 @@ python3 scripts/probe_compliance_api.py \
 is visible; a guessed path in the *poller* is not, because a 404 there is
 indistinguishable from an idle feed.
 
+## What was already investigated (2026-08-13)
+
+Recorded so the next person does not repeat it.
+
+* The **Access tokens** page in the ChatGPT admin console
+  (`chatgpt.com/admin/access-tokens`) issues tokens for *"ChatGPT and Codex
+  programmatic use cases"*, with scopes **Codex** and **Workspace Agents**. It
+  is **not** the Compliance API credential page, and no compliance scope was
+  offered there.
+* A token from that page is valid but unauthorised for compliance data:
+  `/v1/organization/audit_logs` answers `401` with
+  `rejected_by_access_enforcement` / `no_matching_rule` — recognised, wrong
+  scope. That is a provisioning problem, not a wrong URL.
+* `https://api.openai.com/v1/compliance/log` **exists** but is unrelated: it
+  rejects a request with `Missing required parameter:
+  'analytics_cookies_accepted'`, so it concerns cookie-consent telemetry, not
+  conversation records.
+* `/v1/compliance/conversations` does not exist (`Invalid URL`).
+
+Conclusion: Compliance API access is provisioned by OpenAI per agreement and
+was not self-serve for this workspace. Obtain it through the account team
+together with the documentation; do not continue probing hosts and paths, which
+is guesswork against a third party's infrastructure and cannot produce a
+trustworthy configuration.
+
 ## Enabling it
 
 1. Obtain written authorization and the API documentation.
