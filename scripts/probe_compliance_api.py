@@ -109,9 +109,18 @@ def describe(node: Any, prefix: str = "", depth: int = 0, out: list[str] | None 
 
 
 def request_json(
-    url: str, headers: dict[str, str], timeout: int
+    url: str,
+    headers: dict[str, str],
+    timeout: int,
+    method: str = "GET",
+    body: bytes | None = None,
 ) -> tuple[int, dict[str, str], Any, bytes]:
-    req = urllib.request.Request(url, headers=headers, method="GET")  # noqa: S310 - configured URL
+    headers = dict(headers)
+    if body is not None:
+        headers.setdefault("Content-Type", "application/json")
+    req = urllib.request.Request(  # noqa: S310 - configured URL
+        url, headers=headers, method=method, data=body
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:  # noqa: S310
             body = response.read()
@@ -161,6 +170,11 @@ def main() -> int:
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--max-pages", type=int, default=2, help="pages to follow (default 2)")
     parser.add_argument("--timeout", type=int, default=30)
+    parser.add_argument("--method", default="GET", help="HTTP method (default GET)")
+    parser.add_argument(
+        "--body",
+        help="JSON request body, for endpoints that take a POST query document",
+    )
     parser.add_argument(
         "--param",
         action="append",
@@ -235,6 +249,15 @@ def main() -> int:
     has_more_path = env.get("OPENAI_COMPLIANCE_HAS_MORE_FIELD", "has_more")
     cursor_param = env.get("OPENAI_COMPLIANCE_CURSOR_PARAM", "after")
 
+    request_body: bytes | None = None
+    if args.body:
+        try:
+            json.loads(args.body)
+        except json.JSONDecodeError:
+            print("--body must be valid JSON", file=sys.stderr)
+            return 2
+        request_body = args.body.encode("utf-8")
+
     saving = not (args.describe_only or args.try_paths)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out_dir = args.out_dir / stamp
@@ -261,7 +284,22 @@ def main() -> int:
             url = f"{base}{candidate_path}"
             if params:
                 url = f"{url}?{urllib.parse.urlencode(params)}"
-            status, _, document, body = request_json(url, headers, args.timeout)
+            status, _, document, body = request_json(
+                url, headers, args.timeout, args.method, request_body
+            )
+            method_used = args.method
+
+            # 405 is the most informative answer this API gives: the path
+            # exists, only the verb is wrong. Retry it rather than reporting a
+            # real endpoint as a failure.
+            if status == 405 and args.method == "GET":
+                post_status, _, post_doc, post_body = request_json(
+                    url, headers, args.timeout, "POST", request_body or b"{}"
+                )
+                if post_status != 405:
+                    status, document, body = post_status, post_doc, post_body
+                    method_used = "POST"
+
             note = ""
             if status == 200 and isinstance(document, dict):
                 items = dotted(document, items_path)
@@ -270,18 +308,31 @@ def main() -> int:
                     if isinstance(items, list)
                     else f"  top-level keys: {sorted(document)[:8]}"
                 )
-                found.append(candidate_path)
+                found.append(f"{method_used} {candidate_path}")
+            elif status == 405:
+                note = "  PATH EXISTS, wrong method - try --method POST with --body"
+            elif status in (401, 403):
+                detail = body[:200].decode("utf-8", "replace")
+                if "access_enforcement" in detail or "no_matching_rule" in detail:
+                    note = "  token recognised but NOT AUTHORISED for this endpoint"
+                else:
+                    note = "  credential rejected"
             elif status >= 400:
-                note = f"  {body[:120].decode('utf-8', 'replace')}"
-            print(f"  {status}  {candidate_path}{note}")
+                note = f"  {body[:100].decode('utf-8', 'replace')}"
+            print(f"  {status:>3}  {method_used:<4} {candidate_path}{note}")
 
         print()
         if found:
             print("Endpoints that responded 200:")
             for hit in found:
                 print(f"  {hit}")
+            first_method, _, first_path = found[0].partition(" ")
+            body_flag = " --body '{}'" if first_method == "POST" else ""
             print("\nRe-run against one of them to see its shape:")
-            print(f"  python3 {Path(__file__).name} --path '{found[0]}' --describe-only")
+            print(
+                f"  python3 scripts/{Path(__file__).name} --path '{first_path}'"
+                f" --method {first_method}{body_flag} --describe-only"
+            )
             print("\nConfirm it against the documentation before putting it in SSM.")
         else:
             print("None responded 200. That does not mean the API is unavailable:")
@@ -301,13 +352,24 @@ def main() -> int:
         if query:
             url = f"{url}?{urllib.parse.urlencode(query)}"
 
-        status, resp_headers, document, body = request_json(url, headers, args.timeout)
+        status, resp_headers, document, body = request_json(
+            url, headers, args.timeout, args.method, request_body
+        )
         print(f"--- page {page_number}: HTTP {status}, {len(body)} bytes ---")
 
         if status == 401 or status == 403:
             print(
                 "\nThe credential was rejected. Check that the token is a Compliance API\n"
                 "key and that it has not expired. Nothing about the token is printed here.",
+                file=sys.stderr,
+            )
+            return 1
+        if status == 405:
+            print(
+                f"\n405 means {path!r} EXISTS but does not accept {args.method}.\n"
+                "This is a strong signal you have the right path. Try:\n"
+                f"  python3 {Path(__file__).name} --path '{path}' --method POST "
+                "--body '{}' --describe-only",
                 file=sys.stderr,
             )
             return 1

@@ -155,7 +155,25 @@ python3 scripts/probe_compliance_api.py \
 
 Nothing is saved in this mode and nothing is assumed. A path that answers 200
 is a candidate, not a confirmation: check it against the documentation before
-it goes into SSM. A guessed path in the *probe* is harmless because a wrong one
+it goes into SSM.
+
+Read the status codes precisely, because on this API they mean different
+things:
+
+| Status | Meaning |
+| --- | --- |
+| `200` | The endpoint exists and answered. |
+| `405` *"Invalid method for URL"* | **The path exists**; only the verb is wrong. The probe retries it as POST automatically. This is the strongest positive signal short of a 200. |
+| `404` *"Invalid URL"* | The path genuinely does not exist. |
+| `401` with `rejected_by_access_enforcement` / `no_matching_rule` | The token was recognised but is **not authorised for that endpoint**. A different key, or a different scope, is needed -- not a different path. |
+| `401` with `invalid_api_key` | The credential itself is wrong. |
+
+Endpoints that take a query document need a body:
+
+```bash
+python3 scripts/probe_compliance_api.py \
+  --path '/<documented-path>' --method POST --body '{}' --describe-only
+``` A guessed path in the *probe* is harmless because a wrong one
 is visible; a guessed path in the *poller* is not, because a 404 there is
 indistinguishable from an idle feed.
 
