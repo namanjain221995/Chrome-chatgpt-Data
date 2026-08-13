@@ -136,8 +136,15 @@ cat <<EOF
 [dev-policy] backend    ${API_BASE_URL%/}
 
 Next:
-  1. Fully quit the browser (closing the window is not enough). For the snap
-     build of Chromium: pkill chromium, then reopen.
+  1. Fully quit the browser. Closing the window is not enough, and the snap
+     build keeps processes alive. Restrict the match to your own processes --
+     a bare "pkill -f chromium" matches other users' processes and fails
+     noisily without stopping the browser:
+
+       pgrep -u "\$(id -u)" -f 'snap/chromium|chromium-browser|google-chrome' | wc -l
+       pkill -u "\$(id -u)" -f 'snap/chromium|chromium-browser|google-chrome'
+
+     Re-run the pgrep until it reports 0, then reopen the browser.
   2. Reopen it and visit chrome://policy -- "Show policies with no value" off.
      The 3rdparty entry should be listed. Press "Reload policies" if not.
   3. Open the extension's service worker console from chrome://extensions and

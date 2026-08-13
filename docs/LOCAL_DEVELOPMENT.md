@@ -137,7 +137,21 @@ too.
    ```
 
 3. **Quit the browser completely** and reopen it. Closing the window is not
-   enough; policy is read at start-up. Confirm at `chrome://policy`.
+   enough — policy is read at start-up, and the snap build keeps processes
+   alive. Match only your own processes:
+
+   ```bash
+   pkill -u "$(id -u)" -f 'snap/chromium|chromium-browser|google-chrome'
+   pgrep -u "$(id -u)" -f 'snap/chromium|chromium-browser|google-chrome' | wc -l   # expect 0
+   ```
+
+   A bare `pkill -f chromium` matches other users' processes, fails with
+   `Permission denied` for each, and leaves the browser running — so the policy
+   appears not to work when in fact it was never re-read.
+
+   Confirm at `chrome://policy`. If the extension is listed by name but shows
+   *No policies set*, the browser read none of the files: check that the
+   extension id still matches, and that the browser really did restart.
 
 4. Open the service worker console from `chrome://extensions` and watch it
    fetch the runtime configuration.
