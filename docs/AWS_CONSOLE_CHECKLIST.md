@@ -38,9 +38,15 @@ CLI verification, expected output, and rollback.
 - [ ] Elastic IP is associated with the instance.
 - [ ] Security group inbound rules contain no application ports at all: no 80,
       443, 5432, 5050, 8000 or 8443. Public traffic arrives through the
-      Cloudflare Tunnel, which is outbound-only.
-- [ ] The only inbound rule is TCP 22, restricted to a controlled source range
-      or bastion for administration and GitHub Actions deployment.
+      Cloudflare Tunnel, which is outbound-only, and nothing on the host
+      listens on those ports -- an open rule there is pure attack surface.
+- [ ] The only inbound rule is TCP 22, for administration and for the GitHub
+      Actions deployment.
+- [ ] Port 22 hardening: `sudo sshd -T | grep -E '^(passwordauthentication|permitrootlogin)'`
+      reports `passwordauthentication no`. Restricting the source range is
+      preferable but is not achievable with GitHub-hosted runners, which come
+      from a large rotating pool; see docs/SECURITY.md for the trade-off and
+      the alternatives.
 - [ ] Systems Manager → Fleet Manager shows the node Online (used for
       Parameter Store access and break-glass sessions, not for deployment).
 - [ ] SSH from the controlled source works and the host-key fingerprint

@@ -68,11 +68,36 @@ Access is via an SSH local port-forward — see
 
 ### 9. SSH is the only administrative path
 Application traffic never uses SSH, and SSH never carries application traffic.
-Restrict port 22 to a controlled source range or a bastion. GitHub Actions
-authenticates with a dedicated key held in `EC2_SSH_PRIVATE_KEY`, with host-key
-checking always enabled and the host key pinned through the
-`EC2_SSH_HOST_KEY` repository variable; `StrictHostKeyChecking=no` is never
-used. See [GITHUB_SECRETS.md](GITHUB_SECRETS.md).
+GitHub Actions authenticates with a dedicated key held in
+`EC2_SSH_PRIVATE_KEY`, with host-key checking always enabled and the host key
+pinned through the `EC2_SSH_HOST_KEY` repository variable;
+`StrictHostKeyChecking=no` is never used. See
+[GITHUB_SECRETS.md](GITHUB_SECRETS.md).
+
+**Port 22 source range — an accepted trade-off.** GitHub-hosted runners
+connect from a large, rotating IP pool, so pinning the security group to a
+narrow source range is not achievable while deployment runs on them. Port 22
+therefore stays reachable, and the control is authentication rather than
+network scope:
+
+* key-only authentication (`PasswordAuthentication no`, the Amazon Linux 2023
+  default — verify with `sudo sshd -T | grep passwordauthentication`);
+* no root login;
+* a dedicated deployment key that is rotated as described in
+  [GITHUB_SECRETS.md](GITHUB_SECRETS.md).
+
+If a narrow range is required by policy, the options are a bastion host, a
+self-hosted runner inside the VPC, or restricting to GitHub's published
+`actions` ranges from `https://api.github.com/meta` and refreshing them on a
+schedule. Note that **no application port is open in any of these cases**: the
+Cloudflare Tunnel is outbound-only, so removing SSH exposure is the only
+inbound question left to answer.
+
+### 9a. No application port is ever published
+The security group needs no rule for 80, 443, 8000, 5432 or 5050. Nothing on
+the host listens on them, so such a rule grants reach without granting access
+and should be deleted. `scripts/verify_production.sh` fails if any private
+service ever becomes bound to a public address.
 
 ### 10–11. S3 block public access and encryption
 Block-all-public-access, `BucketOwnerEnforced` ownership (ACLs disabled),
