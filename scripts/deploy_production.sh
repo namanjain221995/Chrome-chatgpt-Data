@@ -33,6 +33,7 @@ PREVIOUS_RELEASE="${RELEASE_DIR}/previous-release"
 HEALTH_RETRIES="${HEALTH_RETRIES:-60}"
 HEALTH_INTERVAL="${HEALTH_INTERVAL:-5}"
 PUBLIC_HEALTH_RETRIES="${PUBLIC_HEALTH_RETRIES:-24}"
+PUBLIC_FAILED=0
 DEPLOY_ACTOR="${DEPLOY_ACTOR:-$(id -un)}"
 
 WITH_TUNNEL=true
@@ -98,9 +99,7 @@ ROLLBACK_SHA="$(release_value GIT_SHA)"
 if [ -z "${ROLLBACK_SHA}" ]; then
   # First managed deployment: fall back to whatever is checked out right now.
   ROLLBACK_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
-  FIRST_DEPLOYMENT=true
-else
-  FIRST_DEPLOYMENT=false
+  log "no previous release recorded; this is the first managed deployment"
 fi
 log "deploying ${DEPLOY_SHA}; rollback target ${ROLLBACK_SHA:-none}"
 
@@ -356,14 +355,25 @@ else
   done
   if [ "${public_ok}" = true ]; then
     log "public endpoint is healthy"
-  elif [ "${FIRST_DEPLOYMENT}" = true ]; then
-    # DNS or the public hostname route may not exist yet on the very first run.
-    # Everything inside the host is verified, so this is reported, not fatal.
-    warn "public endpoint ${PUBLIC_BASE_URL}/health/ready is not answering yet"
-    warn "internal API, tunnel, worker and S3 all passed; finish the Cloudflare"
-    warn "public-hostname route (docs/CLOUDFLARE_TUNNEL_SETUP.md) and re-check"
   else
-    die "public endpoint ${PUBLIC_BASE_URL}/health/ready failed while internal checks passed"
+    # Everything inside the host passed, so this is an edge problem, not a bad
+    # release: rolling the application back would take a working stack
+    # backwards without touching the actual cause. The deployment is reported
+    # as failed, with what is needed to diagnose it.
+    status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+      "${PUBLIC_BASE_URL}/health/ready" 2>/dev/null || echo "no-response")"
+    warn "public endpoint ${PUBLIC_BASE_URL}/health/ready returned ${status}"
+    warn "the API, worker, backup, tunnel and S3 all passed inside the host,"
+    warn "so the request is not reaching this instance. Common causes:"
+    warn "  * the DNS record still points at a tunnel that was deleted and"
+    warn "    recreated - the name is reused but the tunnel id is not."
+    warn "    Remove the hostname route and add it again from the current"
+    warn "    tunnel so Cloudflare rewrites the record;"
+    warn "  * the public hostname was added to a different tunnel;"
+    warn "  * a Cloudflare Access policy is intercepting the request."
+    warn "cloudflared reports:"
+    "${COMPOSE[@]}" logs --no-color --tail 25 cloudflared 2>&1 | sed 's/^/    /' >&2 || true
+    PUBLIC_FAILED=1
   fi
 fi
 
@@ -398,6 +408,14 @@ log "pruning dangling images"
 docker image prune -f >/dev/null 2>&1 || true
 
 "${COMPOSE[@]}" ps
+
+if [ "${PUBLIC_FAILED:-0}" = "1" ]; then
+  # Recorded as the running release regardless: the containers really are at
+  # this commit, and a release file that disagrees with the host is worse than
+  # a failed deployment.
+  die "deployment of ${DEPLOY_SHA} is running on the host but is not reachable at ${PUBLIC_BASE_URL}"
+fi
+
 log "deployment of ${DEPLOY_SHA} completed successfully"
 if [ "${WITH_TUNNEL}" != true ]; then
   warn "NO PUBLIC INGRESS: the stack is running but unreachable from outside"

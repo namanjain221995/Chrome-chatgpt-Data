@@ -176,3 +176,20 @@ connections, typically to two different Cloudflare data centres.
 | Tunnel healthy, public URL returns 502 | Hostname service is not `http://api:8000`, or the API is unhealthy | Check the hostname route; run `verify_production.sh`. |
 | Public URL returns 400 `Invalid host header` | Host header is being rewritten, or `public_base_url` does not match the hostname | Clear the HTTP Host Header override; confirm the SSM value. |
 | Public URL times out, tunnel healthy | DNS record is grey-clouded or missing | Re-add the public hostname so Cloudflare recreates the proxied CNAME. |
+| Every path returns an empty-bodied 5xx, including a path the API would 404 | The request never reaches the origin. Most often the tunnel was deleted and recreated: the name is reused but the **tunnel id is not**, and the DNS record still targets the old `<uuid>.cfargotunnel.com`. | Delete the `archive` DNS record, then add the public hostname again **from the current tunnel** so Cloudflare writes a record pointing at the new id. Confirm with the tunnel id in `docker compose logs cloudflared`. |
+| Public URL redirects to a Cloudflare login page | A Zero Trust Access policy covers the hostname | Remove the Access application, or exempt `/health/*`. The extension authenticates to the API itself; Access in front of it would break it. |
+
+### Confirming the record and the tunnel agree
+
+A proxied record hides its target from outside DNS, so compare from both ends:
+
+```bash
+# On the instance: which tunnel is this connector actually serving?
+cd /opt/techsara-chat-archive
+sudo docker compose --env-file .env.production -f compose.prod.yaml \
+  logs --tail 40 cloudflared | grep -iE 'tunnel|connector|registered'
+```
+
+In the dashboard, open **DNS → the `archive` record → Edit** and check the
+tunnel it names. If the two disagree, the record is stale: delete it and re-add
+the public hostname from the tunnel that is actually running.
