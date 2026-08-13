@@ -40,9 +40,22 @@ install -d -o root -g "${APP_GID}" -m 0750 "${DATA_ROOT}/secrets"
 # Parameter access
 # ---------------------------------------------------------------------------
 
+# Values pasted into the SSM console frequently carry a trailing space or an
+# accidental leading one. A stray space in a tunnel token or a hostname fails
+# far from its cause, so every value is trimmed on the way in. Interior spaces
+# -- a workspace label, for instance -- are preserved.
+trim() {
+  local v="$1"
+  v="${v#"${v%%[![:space:]]*}"}"
+  v="${v%"${v##*[![:space:]]}"}"
+  printf '%s' "${v}"
+}
+
 get_parameter() {
-  aws ssm get-parameter --name "${PARAM_PREFIX}/$1" --with-decryption \
-    --region "${AWS_REGION}" --query 'Parameter.Value' --output text 2>/dev/null
+  local raw
+  raw="$(aws ssm get-parameter --name "${PARAM_PREFIX}/$1" --with-decryption \
+    --region "${AWS_REGION}" --query 'Parameter.Value' --output text 2>/dev/null)" || return 1
+  trim "${raw}"
 }
 
 required_parameter() {
