@@ -113,6 +113,36 @@ retention decision.
 Alert on: `lag_seconds` above one hour, `consecutive_errors` ≥ 3, or
 `last_success_at` older than two poll intervals.
 
+## Probing it first
+
+Before configuring the poller, find out what the feed actually returns. The
+production adapter cannot be configured sensibly without knowing whether the
+log carries message content or only event metadata, and that is a question only
+your documentation and a real request can answer.
+
+```bash
+cp .env.compliance.example .env.compliance   # fill in base URL, log path, token
+python3 scripts/probe_compliance_api.py --describe-only
+```
+
+`--describe-only` prints the response structure and saves nothing. Drop it to
+write the raw pages under `data/compliance-probe/<timestamp>/` for inspection;
+that directory is gitignored and holds real conversation records, so delete it
+when you are done.
+
+The probe reports the item keys and flags whether any content-bearing field is
+present, which decides the architecture:
+
+* **content present** — the feed alone can populate the archive, and the
+  browser extension becomes an optional live-capture supplement;
+* **metadata only** — the feed provides coverage and completeness, and message
+  bodies come either from a second documented request
+  (`OPENAI_COMPLIANCE_FILES_PATH`) or from the extension.
+
+It distinguishes the failure modes that otherwise look identical: `404` means
+the path is wrong, not that the workspace is empty; `401`/`403` means the
+credential was rejected. Neither is ever reported as "no data".
+
 ## Enabling it
 
 1. Obtain written authorization and the API documentation.

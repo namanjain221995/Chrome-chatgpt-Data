@@ -109,7 +109,9 @@ done
 [ "${env_present}" -eq 0 ] && echo "${GREEN}ok     ${RESET} no environment file present"
 
 if git rev-parse --git-dir >/dev/null 2>&1; then
-  tracked_env="$(git ls-files | grep -E '(^|/)\.env($|\.)' | grep -v '\.env\.example$' || true)"
+  # `*.example` files are templates by convention. They are still subject to
+  # every content check above, so a real value inside one is still a finding.
+  tracked_env="$(git ls-files | grep -E '(^|/)\.env($|\.)' | grep -v '\.example$' || true)"
   if [ -n "${tracked_env}" ]; then
     echo "${RED}FINDING${RESET} an environment file is TRACKED BY GIT:"
     printf '        %s\n' "${tracked_env//$'\n'/$'\n        '}"

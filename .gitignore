@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+!.env.compliance.example
 *.pem
 *.key
 !tests/fixtures/**/*.key
@@ -42,6 +43,9 @@ deploy/previous-release
 # --- Local data volumes ---
 .data/
 srv/
+
+# --- Compliance probe output: real conversation records, never committed ---
+data/
 
 # --- Editors / OS ---
 .DS_Store
