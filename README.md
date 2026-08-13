@@ -139,7 +139,9 @@ Read in this order:
    is no registry.
 6. [ROLLBACK.md](docs/ROLLBACK.md) — automatic and manual rollback, and the
    backward-compatible migration rules that make it safe.
-7. [CHROME_ENTERPRISE_DEPLOYMENT.md](docs/CHROME_ENTERPRISE_DEPLOYMENT.md) —
+7. [GOOGLE_OAUTH_SETUP.md](docs/GOOGLE_OAUTH_SETUP.md) — the Google Workspace
+   sign-in client, and which parts need a Workspace administrator.
+8. [CHROME_ENTERPRISE_DEPLOYMENT.md](docs/CHROME_ENTERPRISE_DEPLOYMENT.md) —
    private extension publishing and managed policy.
 
 Production uses the EC2 IAM role and the AWS credential provider chain. No AWS

@@ -95,7 +95,8 @@ Two values it will not invent:
 * `cloudflare_tunnel_token` — create the tunnel first (step 4), then re-run
   with `--prompt-tunnel-token`.
 * `oidc_client_id` — pass `--oidc-client-id <id>` once the Google Workspace
-  OAuth client exists. Without it a clearly-marked placeholder is written: the
+  OAuth client exists. Creating it needs a Workspace administrator; the
+  console sequence is in [GOOGLE_OAUTH_SETUP.md](GOOGLE_OAUTH_SETUP.md). Without it a clearly-marked placeholder is written: the
   stack starts, but no employee can sign in, and `verify_production.sh` warns
   about it on every run.
 

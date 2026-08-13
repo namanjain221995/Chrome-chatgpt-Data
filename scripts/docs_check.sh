@@ -28,6 +28,7 @@ REQUIRED=(
   docs/EC2_DEPLOYMENT.md
   docs/SIMPLE_CICD.md
   docs/GITHUB_SECRETS.md
+  docs/GOOGLE_OAUTH_SETUP.md
   docs/ROLLBACK.md
   docs/SECURITY.md
   docs/SECURITY_REVIEW.md
@@ -138,6 +139,7 @@ declare -A MUST_MENTION=(
   ["docs/CAPACITY.md"]="max_connections"
   ["docs/BACKUP_RESTORE.md"]="test_restore.sh"
   ["docs/CHROME_EXTENSION.md"]="complete_current_page"
+  ["docs/GOOGLE_OAUTH_SETUP.md"]="chromiumapp.org"
 )
 for doc in "${!MUST_MENTION[@]}"; do
   phrase="${MUST_MENTION[${doc}]}"
