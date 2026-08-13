@@ -15,6 +15,9 @@
 # This writes the same structure Chrome Enterprise delivers in production, so
 # what you test is what employees will run.
 #
+# Run this on the workstation running the browser -- not on the EC2 host and
+# not in CloudShell, neither of which has a browser to configure.
+#
 # Not for production machines: there the policy comes from Google Admin console
 # or your MDM. See docs/CHROME_ENTERPRISE_DEPLOYMENT.md.
 # =============================================================================
@@ -57,18 +60,31 @@ log() { printf '[dev-policy] %s\n' "$*"; }
 
 [ "$(id -u)" -eq 0 ] || die "run as root (sudo $0 ...)"
 
-# Chrome and Chromium read from different directories, and a machine may have
-# either or both.
+# Chrome, Chromium and Ubuntu's snap build each read from a different place,
+# and a machine may have several installed.
+CHROME_DIRS=(/etc/opt/chrome/policies/managed)
+CHROMIUM_DIRS=(
+  /etc/chromium/policies/managed
+  /etc/chromium-browser/policies/managed
+  /var/snap/chromium/current/policies/managed
+)
+
 declare -a POLICY_DIRS=()
 case "${BROWSER}" in
-  chrome)   POLICY_DIRS=(/etc/opt/chrome/policies/managed) ;;
-  chromium) POLICY_DIRS=(/etc/chromium/policies/managed) ;;
+  chrome)   POLICY_DIRS=("${CHROME_DIRS[@]}") ;;
+  chromium) POLICY_DIRS=("${CHROMIUM_DIRS[@]}") ;;
   "")
-    for candidate in /etc/opt/chrome/policies/managed /etc/chromium/policies/managed; do
+    # Write wherever a browser is actually installed. Writing to all of them is
+    # harmless and avoids "the policy is not applying" caused by guessing wrong.
+    for candidate in "${CHROME_DIRS[@]}" "${CHROMIUM_DIRS[@]}"; do
       parent="$(dirname "$(dirname "${candidate}")")"
       [ -d "${parent}" ] && POLICY_DIRS+=("${candidate}")
     done
-    [ "${#POLICY_DIRS[@]}" -gt 0 ] || POLICY_DIRS=(/etc/opt/chrome/policies/managed)
+    if [ "${#POLICY_DIRS[@]}" -eq 0 ]; then
+      die "no Chrome or Chromium installation found. Run this on the machine
+       running the browser, not on a server or in CloudShell. Force a location
+       with --browser chrome|chromium if you know better."
+    fi
     ;;
   *) die "--browser must be chrome or chromium" ;;
 esac
@@ -123,7 +139,8 @@ cat <<EOF
 [dev-policy] backend    ${API_BASE_URL%/}
 
 Next:
-  1. Fully quit the browser (closing the window is not enough).
+  1. Fully quit the browser (closing the window is not enough). For the snap
+     build of Chromium: pkill chromium, then reopen.
   2. Reopen it and visit chrome://policy -- "Show policies with no value" off.
      The 3rdparty entry should be listed. Press "Reload policies" if not.
   3. Open the extension's service worker console from chrome://extensions and
