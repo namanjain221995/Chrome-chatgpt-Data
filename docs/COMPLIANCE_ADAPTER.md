@@ -143,6 +143,22 @@ It distinguishes the failure modes that otherwise look identical: `404` means
 the path is wrong, not that the workspace is empty; `401`/`403` means the
 credential was rejected. Neither is ever reported as "no data".
 
+### If you do not have the documented path yet
+
+The probe can test candidates and report what each one answers, which is safe
+precisely because it separates 404 from 200:
+
+```bash
+python3 scripts/probe_compliance_api.py \
+  --try-paths '/v1/compliance/log,/v1/organization/audit_logs,/v1/conversations'
+```
+
+Nothing is saved in this mode and nothing is assumed. A path that answers 200
+is a candidate, not a confirmation: check it against the documentation before
+it goes into SSM. A guessed path in the *probe* is harmless because a wrong one
+is visible; a guessed path in the *poller* is not, because a 404 there is
+indistinguishable from an idle feed.
+
 ## Enabling it
 
 1. Obtain written authorization and the API documentation.

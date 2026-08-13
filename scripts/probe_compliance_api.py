@@ -145,6 +145,19 @@ def dotted(document: Any, path: str) -> Any:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV_FILE)
+    parser.add_argument(
+        "--path",
+        help="override OPENAI_COMPLIANCE_LOG_PATH for this run",
+    )
+    parser.add_argument(
+        "--try-paths",
+        metavar="P1,P2,...",
+        help=(
+            "probe several candidate paths and report the status of each, "
+            "without saving anything. Use this to identify the documented "
+            "endpoint empirically: 404 means wrong path, 200 means it exists."
+        ),
+    )
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--max-pages", type=int, default=2, help="pages to follow (default 2)")
     parser.add_argument("--timeout", type=int, default=30)
@@ -169,7 +182,12 @@ def main() -> int:
 
     env = {**load_env_file(args.env_file), **os.environ}
 
-    missing = [name for name in REQUIRED if not env.get(name)]
+    required = list(REQUIRED)
+    if args.path or args.try_paths:
+        # The path is supplied on the command line for this run.
+        required = [name for name in required if name != "OPENAI_COMPLIANCE_LOG_PATH"]
+
+    missing = [name for name in required if not env.get(name)]
     if missing:
         print("Cannot probe: these values are not set.\n", file=sys.stderr)
         for name in missing:
@@ -186,7 +204,7 @@ def main() -> int:
         return 2
 
     base = env["OPENAI_COMPLIANCE_BASE_URL"].rstrip("/")
-    path = "/" + env["OPENAI_COMPLIANCE_LOG_PATH"].lstrip("/")
+    path = "/" + (args.path or env.get("OPENAI_COMPLIANCE_LOG_PATH", "")).lstrip("/")
     token = env["OPENAI_COMPLIANCE_API_KEY"]
 
     header_name = env.get("OPENAI_COMPLIANCE_AUTH_HEADER", "Authorization")
@@ -217,17 +235,60 @@ def main() -> int:
     has_more_path = env.get("OPENAI_COMPLIANCE_HAS_MORE_FIELD", "has_more")
     cursor_param = env.get("OPENAI_COMPLIANCE_CURSOR_PARAM", "after")
 
+    saving = not (args.describe_only or args.try_paths)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out_dir = args.out_dir / stamp
-    if not args.describe_only:
+    if saving:
         out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"endpoint  {base}{path}")
+    if args.try_paths:
+        print(f"host      {base}")
+    else:
+        print(f"endpoint  {base}{path}")
     print(f"auth      {header_name}: {scheme} <token hidden, {len(token)} chars>")
     if params:
         print(f"query     {params}")
-    print(f"output    {'(describe only, nothing saved)' if args.describe_only else out_dir}")
+    print(f"output    {out_dir if saving else '(nothing saved)'}")
     print()
+
+    if args.try_paths:
+        print("Testing candidate paths. Nothing is saved and nothing is assumed:")
+        print("  200 = the endpoint exists      404 = wrong path, not empty data")
+        print("  401/403 = credential rejected  other = read the message\n")
+        found: list[str] = []
+        for candidate in [c.strip() for c in args.try_paths.split(",") if c.strip()]:
+            candidate_path = "/" + candidate.lstrip("/")
+            url = f"{base}{candidate_path}"
+            if params:
+                url = f"{url}?{urllib.parse.urlencode(params)}"
+            status, _, document, body = request_json(url, headers, args.timeout)
+            note = ""
+            if status == 200 and isinstance(document, dict):
+                items = dotted(document, items_path)
+                note = (
+                    f"  items at {items_path!r}: {len(items)}"
+                    if isinstance(items, list)
+                    else f"  top-level keys: {sorted(document)[:8]}"
+                )
+                found.append(candidate_path)
+            elif status >= 400:
+                note = f"  {body[:120].decode('utf-8', 'replace')}"
+            print(f"  {status}  {candidate_path}{note}")
+
+        print()
+        if found:
+            print("Endpoints that responded 200:")
+            for hit in found:
+                print(f"  {hit}")
+            print("\nRe-run against one of them to see its shape:")
+            print(f"  python3 {Path(__file__).name} --path '{found[0]}' --describe-only")
+            print("\nConfirm it against the documentation before putting it in SSM.")
+        else:
+            print("None responded 200. That does not mean the API is unavailable:")
+            print("  * every 404 means these particular paths are wrong;")
+            print("  * a 401/403 means the token is not accepted at all.")
+            print("Get the documented path from your OpenAI account contact.")
+        return 0 if found else 1
 
     total_items = 0
     cursor: str | None = None
@@ -264,7 +325,8 @@ def main() -> int:
             return 1
         if document is None:
             print("Response was not JSON; saved verbatim for inspection.", file=sys.stderr)
-            if not args.describe_only:
+            if saving:
+                out_dir.mkdir(parents=True, exist_ok=True)
                 (out_dir / f"page-{page_number:03d}.raw").write_bytes(body)
             return 1
 
@@ -290,7 +352,7 @@ def main() -> int:
                 print("  -> the feed may be metadata only; content may need a second")
                 print("     request (see OPENAI_COMPLIANCE_FILES_PATH in the docs).")
 
-        if not args.describe_only:
+        if saving:
             target = out_dir / f"page-{page_number:03d}.json"
             target.write_text(json.dumps(document, indent=2, sort_keys=True), encoding="utf-8")
             target.chmod(0o600)
@@ -303,7 +365,7 @@ def main() -> int:
             break
 
     print(f"total items across pages: {total_items}")
-    if not args.describe_only:
+    if saving:
         print(f"\nThese files contain real conversation records for your workspace.")
         print(f"{out_dir} is gitignored. Delete it when you are finished:")
         print(f"  rm -rf {args.out_dir}")
