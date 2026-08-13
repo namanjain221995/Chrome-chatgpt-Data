@@ -62,6 +62,15 @@ lint-extension:
 	@cd $(EXTENSION) && npm run --silent lint
 
 lint-shell:
+	@# A script committed without its executable bit fails only on the server,
+	@# with "Permission denied" or "command not found" from sudo.
+	@non_exec="$$(git ls-files -s scripts tests | awk '$$1 == "100644" && $$4 ~ /\.sh$$/ {print $$4}')"; \
+		if [ -n "$$non_exec" ]; then \
+			echo "shell scripts are committed without the executable bit:" >&2; \
+			printf '  %s\n' $$non_exec >&2; \
+			echo "fix with: git update-index --chmod=+x <file>" >&2; \
+			exit 1; \
+		fi
 	@find scripts tests/integration -type f -name '*.sh' -print0 \
 		| xargs -0 -n1 bash -n
 	@docker run --rm -v "$(ROOT):/mnt:ro" $(SHELLCHECK_IMAGE) sh -c \
