@@ -32,6 +32,7 @@ docker compose -f compose.prod.yaml --profile '*' config --format json > "${conf
 python3 - "${config_file}" <<'PY'
 import json
 import sys
+from urllib.parse import urlsplit
 
 config = json.load(open(sys.argv[1], encoding="utf-8"))
 services = config["services"]
@@ -138,7 +139,19 @@ for name in ("api", "worker", "migrate", "compliance-poller", "backup"):
     assert "AWS_SECRET_ACCESS_KEY" not in env, f"{name} must use the EC2 instance role"
 
 api_env = services["api"]["environment"]
-assert api_env["ARCHIVE_HOSTNAME"] == "archive.example.com"
+
+# Relational, not literal: this script runs both in CI against placeholder
+# values and on the instance against the real ones. What must hold in both is
+# that the host FastAPI accepts is exactly the host Cloudflare publishes.
+public_host = urlsplit(api_env["PUBLIC_BASE_URL"]).hostname
+assert api_env["PUBLIC_BASE_URL"].startswith("https://"), "the public URL must be https"
+assert api_env["ARCHIVE_HOSTNAME"], "ARCHIVE_HOSTNAME must be set"
+assert api_env["ARCHIVE_HOSTNAME"] == public_host, (
+    f"ARCHIVE_HOSTNAME {api_env['ARCHIVE_HOSTNAME']!r} does not match "
+    f"PUBLIC_BASE_URL host {public_host!r}; TrustedHostMiddleware would reject "
+    "every request the tunnel forwards"
+)
+
 assert api_env["BROWSER_CONTENT_CAPTURE_ENABLED"] == "false"
 assert api_env["OPENAI_WRITTEN_AUTHORIZATION_CONFIRMED"] == "false"
 assert api_env["TRAINING_EXPORT_ENABLED"] == "false"

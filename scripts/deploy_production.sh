@@ -147,7 +147,21 @@ TUNNEL_ENV="${DATA_ROOT}/secrets/cloudflared.env"
 # ---------------------------------------------------------------------------
 log "validating compose.prod.yaml"
 "${COMPOSE[@]}" config --quiet
-bash "${APP_DIR}/scripts/verify_production_config.sh" >/dev/null
+# Exported so the topology assertions run against the configuration this
+# deployment will actually start, not against the script's CI placeholders.
+IMAGE_NAME="${IMAGE_NAME}" IMAGE_TAG="${DEPLOY_SHA}" \
+PUBLIC_BASE_URL="${PUBLIC_BASE_URL}" ARCHIVE_HOSTNAME="${ARCHIVE_HOSTNAME}" \
+POSTGRES_DB="${POSTGRES_DB}" POSTGRES_USER="${POSTGRES_USER}" \
+OIDC_ISSUER="$(env_value OIDC_ISSUER)" OIDC_CLIENT_ID="$(env_value OIDC_CLIENT_ID)" \
+OIDC_REQUIRED_HD="$(env_value OIDC_REQUIRED_HD)" \
+ALLOWED_EMAIL_DOMAINS="$(env_value ALLOWED_EMAIL_DOMAINS)" \
+MANAGED_WORKSPACE_LABEL="$(env_value MANAGED_WORKSPACE_LABEL)" \
+PGADMIN_DEFAULT_EMAIL="$(env_value PGADMIN_DEFAULT_EMAIL)" \
+API_WORKERS="$(env_value API_WORKERS)" \
+DATABASE_POOL_SIZE="$(env_value DATABASE_POOL_SIZE)" \
+DATABASE_MAX_OVERFLOW="$(env_value DATABASE_MAX_OVERFLOW)" \
+POSTGRES_MAX_CONNECTIONS="$(env_value POSTGRES_MAX_CONNECTIONS)" \
+  bash "${APP_DIR}/scripts/verify_production_config.sh" >/dev/null
 
 # ---------------------------------------------------------------------------
 # 4. PostgreSQL first, then a pre-migration backup

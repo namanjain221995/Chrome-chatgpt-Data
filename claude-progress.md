@@ -3,7 +3,10 @@
 **Project:** TechSara Managed ChatGPT Session Archive
 **This refactor:** Cloudflare Tunnel ingress + GitHub Actions → SSH → EC2 CI/CD
 **Started:** 2026-08-13
-**Status:** in progress — see "Verification results" below.
+**Status:** complete. `make verify` is green locally and GitHub Actions run
+`31652706875` is green on commit `2727756d32882d429a49cb8134f40eedb70e0528`.
+Production deployment is intentionally skipped until the SSM parameters and the
+Cloudflare tunnel exist; see "Verification results".
 
 ## State before this refactor
 
@@ -107,7 +110,53 @@ The **deployment** layer targeted a different architecture:
 
 ## Verification results
 
-To be recorded after the full local gate and the GitHub Actions run complete.
+`make verify` passed on the complete working tree on 2026-08-13:
+
+- Ruff (lint and format), mypy over 58 source files, ESLint, TypeScript,
+  `bash -n`, ShellCheck 0.10.0 and actionlint 1.7.7 all passed.
+- Backend: 178 unit tests and 112 PostgreSQL integration tests passed. The 11
+  SQLAlchemy warnings are the pre-existing test-rollback warnings.
+- Extension: 105 tests across three files; Manifest V3 validated with zero
+  warnings; eight shared-schema payloads validated; the ZIP reproduced
+  byte-for-byte at SHA-256
+  `2671f3c4bca6caec8914bd08dfbdad5ddcbe77c61ce0f4bc571dfe28cfdc891a`, and the
+  package inspection found no environment file, source map, key material,
+  credential-shaped string or widened content-script match.
+- Alembic upgraded an empty database, downgraded one revision, re-upgraded and
+  reported no drift. The restore test reproduced 41 tables at revision
+  `0002_fts` with matching row counts.
+- The production Compose smoke passed the tunnel topology contract: no host
+  binding on `api`, `postgres` or `worker`; a real loopback binding on pgAdmin;
+  `cloudflared` correctly unstarted without a token; file-based secrets, a
+  special-character database password, non-root execution and the backup
+  `.pgpass` path all verified. The development Compose smoke passed all 14
+  checks.
+- k6 four-scenario smoke: 65 requests, 0 failed, 255 messages accepted,
+  0 duplicates, 0 rejected, backpressure rate 0, p50 55.32 ms, p95 85.66 ms.
+- Retired-technology, prohibited-AWS-service, secret, pip-audit and npm-audit
+  scans passed with zero known dependency vulnerabilities.
+
+### GitHub Actions
+
+The first push exposed two CI problems, both now fixed:
+
+1. The production smoke compared the raw `NetworkSettings.Ports` JSON. Docker
+   renders an exposed-but-unpublished port as `{"5432/tcp":null}` locally and
+   as `{}` on the runner, so the assertion failed on a healthy stack. It now
+   asserts the property that actually matters — that no host binding exists.
+2. A push to `main` started `ci.yml` and `deploy.yml`'s nested CI in the same
+   concurrency group, so one was always cancelled. `ci.yml` now runs on pull
+   requests, `workflow_call` and manual dispatch only.
+
+Run `31652706875` on commit `2727756d32882d429a49cb8134f40eedb70e0528` is green:
+all seven CI jobs plus the deploy job.
+
+The deploy job connected to the instance over SSH and ran its preflight. SSH,
+passwordless sudo, Docker, the git checkout, the AWS CLI and the EC2 instance
+role all verified. The eleven required SSM parameters and
+`/srv/techsara-chat-archive` do not exist yet, so the deployment was **skipped
+with the exact list of what to create** rather than half-applied. Nothing on
+the host was changed.
 
 ## External steps still intentionally manual
 
