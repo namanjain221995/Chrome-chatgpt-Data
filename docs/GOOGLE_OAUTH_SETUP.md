@@ -192,3 +192,13 @@ make the sign-in page more public than it should be.
 | Sign-in succeeds, backend returns 403 | `hd` claim does not match `oidc_required_hd`, or the domain is not in `allowed_email_domains` | Check both SSM parameters, then redeploy |
 | Browser blocks the call with a CORS error | The extension id is not in `extension_ids` | Set it in SSM and redeploy |
 | `invalid_client` on exchange | Client secret missing or wrong in SSM | Re-store `oidc_client_secret`, redeploy |
+
+
+
+
+
+
+
+  
+
+  

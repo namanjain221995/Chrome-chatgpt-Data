@@ -111,6 +111,54 @@ beginning `integration-tests/`. It asserts the exact bucket and region, creates
 one generated key, verifies it and deletes only that key. Never point it at a
 broad production prefix.
 
+## Testing the extension against a real backend
+
+The extension reads its backend URL from `chrome.storage.managed` and from
+nowhere else -- there is no options-page field and no compiled-in default, so
+nobody using the browser can repoint a build at another server. That is the
+right production property, and it means a developer build needs a policy file
+too.
+
+1. Build and load it:
+
+   ```bash
+   make extension-build
+   ```
+
+   `chrome://extensions` -> Developer mode -> **Load unpacked** ->
+   `apps/chrome-extension/dist`. Copy the **ID** Chrome shows.
+
+2. Install the policy (same shape Chrome Enterprise delivers in production):
+
+   ```bash
+   sudo ./scripts/install_dev_policy.sh \
+     --extension-id <id-from-chrome> \
+     --api-base-url https://archive.<company-domain>
+   ```
+
+3. **Quit the browser completely** and reopen it. Closing the window is not
+   enough; policy is read at start-up. Confirm at `chrome://policy`.
+
+4. Open the service worker console from `chrome://extensions` and watch it
+   fetch the runtime configuration.
+
+The unpacked id is derived from the directory path, so it changes if the
+extension is loaded from elsewhere. Re-run the script with the new id, and add
+each id you test with as a redirect URI on the OAuth client
+(`https://<id>.chromiumapp.org/oidc`) -- see
+[GOOGLE_OAUTH_SETUP.md](GOOGLE_OAUTH_SETUP.md).
+
+Remove the policy with `sudo ./scripts/install_dev_policy.sh --remove`.
+
+### What you should expect to see
+
+With the capture gates off -- which is their default and their current
+production value -- the extension will authenticate, fetch the signed
+configuration, report `capture_active: false` in the popup, and **capture
+nothing**. That is success, not a failure. Message capture begins only when the
+server answers `capture_active: true`, which requires both gates and written
+authorization.
+
 ## Troubleshooting
 
 | Symptom | Safe action |
