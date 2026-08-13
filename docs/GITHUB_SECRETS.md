@@ -128,6 +128,7 @@ AWS console.
 | `api_workers` | String | `3` |
 | `worker_concurrency` | String | `2` |
 | `log_level` | String | `INFO` |
+| `api_docs_enabled` | String | `false` — see [SECURITY.md](SECURITY.md#8a-interactive-api-documentation-is-opt-in) before enabling |
 | `s3_encryption_mode` | String | `SSE-S3` |
 | `s3_kms_key_id` | String | empty |
 | `s3_health_cache_seconds` | String | `60` |

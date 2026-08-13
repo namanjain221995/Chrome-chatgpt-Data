@@ -144,6 +144,11 @@ class Settings(BaseSettings):
     offline_queue_max_age_days: int = 7
 
     # ---- Runtime ----------------------------------------------------------
+    # Interactive API documentation. Off in production unless switched on
+    # deliberately: an unauthenticated Swagger UI publishes the whole admin and
+    # ingest surface to anyone who finds the hostname. See docs/SECURITY.md for
+    # the Cloudflare Access policy that must accompany it.
+    api_docs_enabled: bool = False
     log_level: str = "INFO"
     log_format: Literal["json", "console"] = "json"
     log_message_content: bool = False
@@ -272,6 +277,15 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
+
+    @property
+    def api_docs_available(self) -> bool:
+        """Swagger UI and the OpenAPI schema are served only when this is true.
+
+        Always available outside production, where the API surface is not
+        reachable by anyone but the developer running it.
+        """
+        return self.api_docs_enabled or not self.is_production
 
     @property
     def public_hostname(self) -> str | None:

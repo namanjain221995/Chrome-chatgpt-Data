@@ -174,6 +174,11 @@ else
   fi
 fi
 
+if [ "$(env_value API_DOCS_ENABLED)" = "true" ]; then
+  warn "API_DOCS_ENABLED=true: /docs and /openapi.json are served publicly"
+  warn "confirm a Cloudflare Access policy protects them"
+fi
+
 # A placeholder OIDC client id means the stack runs but nobody can sign in.
 if [ "$(env_value OIDC_CLIENT_ID)" = "pending-oidc-configuration" ]; then
   warn "OIDC_CLIENT_ID is still the bootstrap placeholder; employee sign-in will fail"

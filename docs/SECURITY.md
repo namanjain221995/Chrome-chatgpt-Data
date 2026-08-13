@@ -93,6 +93,29 @@ schedule. Note that **no application port is open in any of these cases**: the
 Cloudflare Tunnel is outbound-only, so removing SSH exposure is the only
 inbound question left to answer.
 
+### 8a. Interactive API documentation is opt-in
+`/docs` and `/openapi.json` are served outside production, and in production
+only when `API_DOCS_ENABLED=true`. Swagger UI is unauthenticated: enabling it
+publishes the complete admin, ingest and attachment surface, including request
+schemas, to anyone who knows the hostname.
+
+If it is needed in production, protect it at the edge rather than exposing it:
+
+1. Zero Trust -> Access -> Applications -> **Add a self-hosted application**
+2. Domain `archive.<company-domain>`, **Path** `docs` -- then add a second
+   application for path `openapi.json`
+3. Policy: **Allow**, Include -> *Emails ending in* `@<company-domain>`
+4. Set `/techsara-chat-archive/api_docs_enabled` to `true` and redeploy
+
+Access authenticates against the same Google Workspace directory as the
+application, and every visit is logged in Zero Trust. Do not put an Access
+policy on the whole hostname: the extension calls `/api/v1/*` with a bearer
+token and would be blocked by the interactive login.
+
+The API logs `api_docs_exposed` at WARNING on every start while this is on, and
+`scripts/verify_production.sh` reports it, so it cannot become invisible
+background state.
+
 ### 9a. No application port is ever published
 The security group needs no rule for 80, 443, 8000, 5432 or 5050. Nothing on
 the host listens on them, so such a rule grants reach without granting access

@@ -59,6 +59,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             ),
             kill_switch=settings.kill_switch_enabled,
         )
+    if settings.is_production and settings.api_docs_available:
+        # Loud, every start: this is a deliberate exposure and should not
+        # become invisible background state.
+        logger.warning(
+            "api_docs_exposed",
+            detail=(
+                "Interactive API documentation is enabled in production. "
+                "Protect /docs and /openapi.json with a Cloudflare Access "
+                "policy, or set API_DOCS_ENABLED=false."
+            ),
+        )
     await check_database()
     try:
         yield
@@ -77,9 +88,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         description=DESCRIPTION,
         version=settings.app_version,
         lifespan=lifespan,
-        docs_url=None if settings.is_production else "/docs",
+        docs_url="/docs" if settings.api_docs_available else None,
         redoc_url=None,
-        openapi_url=None if settings.is_production else "/openapi.json",
+        openapi_url="/openapi.json" if settings.api_docs_available else None,
     )
 
     # Order matters: the outermost middleware is registered last.
@@ -115,7 +126,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "name": settings.app_name,
             "version": settings.app_version,
             "api_base_path": settings.api_base_path,
-            "docs": None if settings.is_production else "/docs",
+            "docs": "/docs" if settings.api_docs_available else None,
         }
 
     return app

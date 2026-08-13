@@ -244,6 +244,9 @@ OPENAI_COMPLIANCE_FILES_PATH=$(optional_parameter openai_compliance_files_path)
 API_WORKERS=$(default_to "$(optional_parameter api_workers)" "3")
 WORKER_CONCURRENCY=$(default_to "$(optional_parameter worker_concurrency)" "2")
 LOG_LEVEL=$(default_to "$(optional_parameter log_level)" "INFO")
+# Interactive API docs. Off unless deliberately switched on; pair with a
+# Cloudflare Access policy on /docs and /openapi.json.
+API_DOCS_ENABLED=$(default_to "$(optional_parameter api_docs_enabled)" "false")
 BACKUP_INTERVAL_SECONDS=$(default_to "$(optional_parameter backup_interval_seconds)" "86400")
 BACKUP_RETENTION_DAYS=$(default_to "$(optional_parameter backup_retention_days)" "90")
 RAW_RETENTION_DAYS=$(default_to "$(optional_parameter raw_retention_days)" "365")
