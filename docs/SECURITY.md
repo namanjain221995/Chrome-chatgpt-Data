@@ -99,7 +99,15 @@ only when `API_DOCS_ENABLED=true`. Swagger UI is unauthenticated: enabling it
 publishes the complete admin, ingest and attachment surface, including request
 schemas, to anyone who knows the hostname.
 
-If it is needed in production, protect it at the edge rather than exposing it:
+Swagger UI is served from assets baked into the image, pinned by version and
+verified by SHA-256 at build time, and its initialiser is a static file rather
+than an inline `<script>`. The documentation page therefore loads nothing from
+a third-party origin and needs no `'unsafe-inline'` script permission -- which
+matters, because an administrator pastes a bearer token into that page. The
+API's own responses keep `default-src 'none'`; only `/docs` relaxes the policy,
+and only to `'self'`.
+
+If it is needed in production, protect it at the edge as well:
 
 1. Zero Trust -> Access -> Applications -> **Add a self-hosted application**
 2. Domain `archive.<company-domain>`, **Path** `docs` -- then add a second

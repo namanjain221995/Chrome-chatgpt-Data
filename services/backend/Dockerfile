@@ -61,6 +61,31 @@ RUN apt-get update \
  && groupadd --gid 10001 techsara \
  && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin techsara
 
+# ---------------------------------------------------------------------------
+# Swagger UI assets, self-hosted.
+#
+# FastAPI's default docs page pulls these from a public CDN, which this API's
+# Content-Security-Policy blocks -- correctly, since /docs describes the admin
+# and ingest surface and an administrator may paste a bearer token into it.
+# Serving them from the origin keeps the policy at 'self' and removes a
+# third-party script from that page entirely. Pinned by version and verified
+# by digest, so a compromised CDN cannot change what ships.
+# ---------------------------------------------------------------------------
+ARG SWAGGER_UI_VERSION=5.17.14
+ARG SWAGGER_UI_JS_SHA256=c2e4a9ef08144839ff47c14202063ecfe4e59e70a4e7154a26bd50d880c88ba1
+ARG SWAGGER_UI_CSS_SHA256=40170f0ee859d17f92131ba707329a88a070e4f66874d11365e9a77d232f6117
+
+RUN install -d /opt/swagger-ui \
+ && curl --fail --show-error --silent --location \
+      -o /opt/swagger-ui/swagger-ui-bundle.js \
+      "https://cdn.jsdelivr.net/npm/swagger-ui-dist@${SWAGGER_UI_VERSION}/swagger-ui-bundle.js" \
+ && curl --fail --show-error --silent --location \
+      -o /opt/swagger-ui/swagger-ui.css \
+      "https://cdn.jsdelivr.net/npm/swagger-ui-dist@${SWAGGER_UI_VERSION}/swagger-ui.css" \
+ && echo "${SWAGGER_UI_JS_SHA256}  /opt/swagger-ui/swagger-ui-bundle.js" | sha256sum -c - \
+ && echo "${SWAGGER_UI_CSS_SHA256}  /opt/swagger-ui/swagger-ui.css" | sha256sum -c - \
+ && chmod 0444 /opt/swagger-ui/*
+
 COPY --from=builder /opt/venv /opt/venv
 
 WORKDIR /app

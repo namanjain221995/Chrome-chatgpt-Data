@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from app.api import docs as api_docs
 from app.api.middleware import (
     BodySizeLimitMiddleware,
     CorrelationIdMiddleware,
@@ -88,7 +89,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         description=DESCRIPTION,
         version=settings.app_version,
         lifespan=lifespan,
-        docs_url="/docs" if settings.api_docs_available else None,
+        # Swagger UI is served by app.api.docs from image-local assets, so
+        # FastAPI's CDN-backed page is always disabled.
+        docs_url=None,
         redoc_url=None,
         openapi_url="/openapi.json" if settings.api_docs_available else None,
     )
@@ -120,13 +123,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_router)
     app.include_router(api_router, prefix=settings.api_base_path)
 
+    if settings.api_docs_available and not api_docs.mount(app, settings):
+        logger.warning(
+            "api_docs_assets_missing",
+            directory=str(api_docs.SWAGGER_UI_DIR),
+            detail="documentation is enabled but the image has no Swagger UI assets",
+        )
+
     @app.get("/", include_in_schema=False)
     async def root() -> dict[str, Any]:
         return {
             "name": settings.app_name,
             "version": settings.app_version,
             "api_base_path": settings.api_base_path,
-            "docs": "/docs" if settings.api_docs_available else None,
+            "docs": api_docs.DOCS_PATH if settings.api_docs_available else None,
         }
 
     return app

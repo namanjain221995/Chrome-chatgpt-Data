@@ -113,13 +113,70 @@ class TestApiDocsExposure:
     def test_development_serves_docs_without_any_flag(self) -> None:
         assert Settings(environment="development").api_docs_available is True
 
-    def test_routes_follow_the_setting(self) -> None:
-        from app.main import create_app
+    def test_no_openapi_schema_in_production_by_default(self) -> None:
+        assert create_app(self._production()).openapi_url is None
 
-        hidden = create_app(self._production())
-        assert hidden.docs_url is None
-        assert hidden.openapi_url is None
+    def test_openapi_schema_served_when_enabled(self) -> None:
+        assert create_app(self._production(api_docs_enabled=True)).openapi_url == "/openapi.json"
 
-        shown = create_app(self._production(api_docs_enabled=True))
-        assert shown.docs_url == "/docs"
-        assert shown.openapi_url == "/openapi.json"
+    def test_fastapi_cdn_page_is_never_used(self) -> None:
+        """The built-in page loads Swagger UI from a CDN; ours does not."""
+        for settings in (self._production(), self._production(api_docs_enabled=True)):
+            assert create_app(settings).docs_url is None
+
+    @staticmethod
+    def _with_assets(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+        from app.api import docs as api_docs
+
+        (tmp_path / "swagger-ui-bundle.js").write_text("/* bundle */", encoding="utf-8")
+        (tmp_path / "swagger-ui.css").write_text("/* css */", encoding="utf-8")
+        monkeypatch.setattr(api_docs, "SWAGGER_UI_DIR", tmp_path)
+
+    @staticmethod
+    async def _get(app, path: str):  # type: ignore[no-untyped-def]
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="https://archive.example.com"
+        ) as client:
+            return await client.get(path)
+
+    async def test_docs_are_404_until_enabled(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        self._with_assets(tmp_path, monkeypatch)
+        app = create_app(self._production())
+        assert (await self._get(app, "/docs")).status_code == 404
+        assert (await self._get(app, "/openapi.json")).status_code == 404
+
+    async def test_docs_are_served_when_enabled(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        self._with_assets(tmp_path, monkeypatch)
+        app = create_app(self._production(api_docs_enabled=True))
+
+        page = await self._get(app, "/docs")
+        assert page.status_code == 200
+        assert (await self._get(app, "/openapi.json")).status_code == 200
+        assert (await self._get(app, "/docs/initialiser.js")).status_code == 200
+        assert (await self._get(app, "/static/swagger/swagger-ui.css")).status_code == 200
+
+    async def test_the_page_loads_nothing_third_party_and_nothing_inline(
+        self, tmp_path, monkeypatch
+    ) -> None:  # type: ignore[no-untyped-def]
+        """The reason for self-hosting: no CDN, and no 'unsafe-inline' script."""
+        self._with_assets(tmp_path, monkeypatch)
+        app = create_app(self._production(api_docs_enabled=True))
+        page = await self._get(app, "/docs")
+        body = page.text
+
+        assert "cdn.jsdelivr.net" not in body
+        assert "unpkg.com" not in body
+        assert "<script>" not in body  # every script is a src= reference
+
+        csp = page.headers["content-security-policy"]
+        assert "script-src 'self'" in csp
+        assert "'unsafe-inline'" not in csp.split("style-src")[0]
+
+    async def test_the_api_itself_keeps_the_strict_policy(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        """Relaxing CSP for /docs must not relax it for the API."""
+        self._with_assets(tmp_path, monkeypatch)
+        app = create_app(self._production(api_docs_enabled=True))
+        health = await self._get(app, "/health/live")
+        assert health.headers["content-security-policy"].startswith("default-src 'none'")
+        assert "script-src" not in health.headers["content-security-policy"]
