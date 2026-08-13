@@ -174,7 +174,24 @@ off.
 | `EC2_SSH_PRIVATE_KEY` | Generate a new keypair, append the public key to `~ec2-user/.ssh/authorized_keys`, update the GitHub secret, run *Test EC2 connection*, then remove the old public key. |
 | Host key (`EC2_SSH_HOST_KEY`) | Only changes if the instance is rebuilt. Re-read it as above and update the variable. |
 | Any SSM secret | `scripts/put_secrets.sh`, then re-run the deploy workflow so containers pick up the regenerated files. |
-| `cloudflare_tunnel_token` | Rotate the tunnel token in the Cloudflare dashboard, update SSM, redeploy. |
+| `cloudflare_tunnel_token` | Delete and recreate the tunnel in Zero Trust, store the new token with `scripts/bootstrap_ssm_parameters.sh --domain <d> --prompt-tunnel-token`, then redeploy. |
+
+### Rotating `postgres_password` needs two steps
+
+PostgreSQL reads `POSTGRES_PASSWORD` only when it initialises an empty data
+directory. On a host whose cluster already exists, changing the SSM value alone
+locks the application out: the rendered secret file changes, the running
+cluster does not. Change it inside the database first, then store the same
+value:
+
+```sql
+ALTER ROLE techsara_app WITH PASSWORD '<new value>';
+```
+
+`scripts/bootstrap_ssm_parameters.sh` will not regenerate a machine secret that
+already exists, even with `--overwrite`. Replacing one requires
+`--rotate-secrets` and a typed confirmation, precisely because of this.
+Rotating `jwt_secret` signs every employee out.
 
 ## If a secret is exposed
 
