@@ -67,15 +67,34 @@ an `/etc/fstab` entry and then calls the storage script.
 
 ### 3. Create the SSM parameters
 
-From an administrator workstation:
+The EC2 instance role can *read* Parameter Store but not write to it, so run
+this from **AWS CloudShell** or a workstation with administrator credentials:
 
 ```bash
-./scripts/put_secrets.sh --generate     # machine secrets, then prompts
+git clone https://github.com/namanjain221995/Chrome-chatgpt-Data.git /tmp/tsa
+cd /tmp/tsa
+./scripts/bootstrap_ssm_parameters.sh --domain <company-domain>
 ```
 
-The exact parameter list is in [GITHUB_SECRETS.md](GITHUB_SECRETS.md). The
-deployment fails with a named parameter if any required one is missing — it
-never guesses a default for a secret.
+That generates the machine-only secrets (PostgreSQL password, JWT secret,
+config signing key, pgAdmin password) with `openssl`, never prints them, and
+derives the public URL, hosted domain and allowed email domains from
+`--domain`. It is idempotent: an existing parameter is kept unless you pass
+`--overwrite`, so re-running never rotates a password by accident.
+
+Two values it will not invent:
+
+* `cloudflare_tunnel_token` — create the tunnel first (step 4), then re-run
+  with `--prompt-tunnel-token`.
+* `oidc_client_id` — pass `--oidc-client-id <id>` once the Google Workspace
+  OAuth client exists. Without it a clearly-marked placeholder is written: the
+  stack starts, but no employee can sign in, and `verify_production.sh` warns
+  about it on every run.
+
+`scripts/put_secrets.sh` is the fully interactive alternative. The exact
+parameter list is in [GITHUB_SECRETS.md](GITHUB_SECRETS.md). A deployment fails
+naming the specific parameter if a required one is missing — it never guesses a
+default for a secret.
 
 ### 4. Create the Cloudflare tunnel
 
@@ -109,7 +128,30 @@ present. If any fails, fix the instance profile before continuing —
 
 ```bash
 cd /opt/techsara-chat-archive
-git fetch origin
+git fetch origin && git reset --hard origin/main
+sudo ./scripts/deploy_production.sh "$(git rev-parse origin/main)"
+```
+
+#### Bringing the stack up before the tunnel exists
+
+Steps 4 and 5 depend on your Cloudflare account and can take a while to
+arrange. To get PostgreSQL, the API, the worker and the nightly backup running
+and verified in the meantime:
+
+```bash
+sudo ./scripts/deploy_production.sh --without-tunnel "$(git rev-parse origin/main)"
+```
+
+This runs the identical deployment — lock, SSM render, migrations, health
+checks, rollback on failure — but does not start `cloudflared`, and records
+`PUBLIC_INGRESS=none` in `deploy/current-release`. **The archive has no public
+ingress in this state**; the extension cannot reach it. Both the deployment and
+`verify_production.sh` say so loudly, and `verify_production.sh` fails if
+`cloudflared` is running while the release claims otherwise.
+
+Once the tunnel token is in SSM, re-run without the flag to add public ingress:
+
+```bash
 sudo ./scripts/deploy_production.sh "$(git rev-parse origin/main)"
 ```
 

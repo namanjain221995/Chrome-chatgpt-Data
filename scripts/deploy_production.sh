@@ -3,6 +3,7 @@
 # Production deployment on the EC2 host.
 #
 #   ./scripts/deploy_production.sh <git-sha>
+#   ./scripts/deploy_production.sh --without-tunnel <git-sha>
 #   DEPLOY_SHA=<git-sha> ./scripts/deploy_production.sh
 #
 # Invoked over SSH by .github/workflows/deploy.yml with the exact commit that
@@ -33,6 +34,20 @@ HEALTH_RETRIES="${HEALTH_RETRIES:-60}"
 HEALTH_INTERVAL="${HEALTH_INTERVAL:-5}"
 PUBLIC_HEALTH_RETRIES="${PUBLIC_HEALTH_RETRIES:-24}"
 DEPLOY_ACTOR="${DEPLOY_ACTOR:-$(id -un)}"
+
+WITH_TUNNEL=true
+POSITIONAL=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    # Bring-up path: start the internal stack before the Cloudflare tunnel
+    # exists. There is no public ingress in this mode, and it says so loudly.
+    --without-tunnel) WITH_TUNNEL=false; shift ;;
+    --help|-h) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
+    *) POSITIONAL+=("$1"); shift ;;
+  esac
+done
+set -- "${POSITIONAL[@]+"${POSITIONAL[@]}"}"
 
 DEPLOY_SHA="${1:-${DEPLOY_SHA:-}}"
 
@@ -119,7 +134,8 @@ chmod +x "${APP_DIR}/scripts/"*.sh
 # 2. Configuration and secrets from SSM
 # ---------------------------------------------------------------------------
 log "rendering configuration from AWS SSM Parameter Store"
-IMAGE_TAG="${DEPLOY_SHA}" "${APP_DIR}/scripts/fetch_ssm_secrets.sh"
+IMAGE_TAG="${DEPLOY_SHA}" ALLOW_MISSING_TUNNEL="$([ "${WITH_TUNNEL}" = true ] && echo false || echo true)" \
+  "${APP_DIR}/scripts/fetch_ssm_secrets.sh"
 [ -f "${ENV_FILE}" ] || die "${ENV_FILE} was not produced"
 
 env_value() { sed -n "s/^$1=//p" "${ENV_FILE}" | tail -n 1; }
@@ -140,7 +156,12 @@ done
 [ "$(env_value IMAGE_TAG)" = "${DEPLOY_SHA}" ] || die "IMAGE_TAG in ${ENV_FILE} is not ${DEPLOY_SHA}"
 
 TUNNEL_ENV="${DATA_ROOT}/secrets/cloudflared.env"
-[ -s "${TUNNEL_ENV}" ] || die "Cloudflare tunnel token missing at ${TUNNEL_ENV}"
+if [ "${WITH_TUNNEL}" = true ]; then
+  [ -s "${TUNNEL_ENV}" ] || die "Cloudflare tunnel token missing at ${TUNNEL_ENV}"
+else
+  warn "--without-tunnel: the Cloudflare tunnel will NOT be started"
+  warn "the archive will have NO public ingress until it is"
+fi
 
 # ---------------------------------------------------------------------------
 # 3. Validate the Compose topology before starting anything
@@ -167,7 +188,11 @@ POSTGRES_MAX_CONNECTIONS="$(env_value POSTGRES_MAX_CONNECTIONS)" \
 # 4. PostgreSQL first, then a pre-migration backup
 # ---------------------------------------------------------------------------
 log "pulling pinned third-party images"
-"${COMPOSE[@]}" pull --quiet postgres cloudflared
+if [ "${WITH_TUNNEL}" = true ]; then
+  "${COMPOSE[@]}" pull --quiet postgres cloudflared
+else
+  "${COMPOSE[@]}" pull --quiet postgres
+fi
 
 log "starting PostgreSQL"
 "${COMPOSE[@]}" up -d postgres
@@ -205,8 +230,14 @@ fi
 log "running database migrations"
 "${COMPOSE[@]}" run --rm migrate
 
-log "recreating api, worker, backup and cloudflared"
-"${COMPOSE[@]}" up -d --no-build --remove-orphans api worker backup cloudflared
+if [ "${WITH_TUNNEL}" = true ]; then
+  log "recreating api, worker, backup and cloudflared"
+  "${COMPOSE[@]}" up -d --no-build --remove-orphans api worker backup cloudflared
+else
+  log "recreating api, worker and backup (no tunnel)"
+  "${COMPOSE[@]}" stop cloudflared >/dev/null 2>&1 || true
+  "${COMPOSE[@]}" up -d --no-build --remove-orphans api worker backup
+fi
 
 # pgAdmin is never started by a deployment. The compliance poller starts only
 # when its own flag is on.
@@ -256,44 +287,52 @@ log "checking the nightly backup service"
   die "backup container is not running"
 }
 
-log "checking the Cloudflare tunnel"
 tunnel_ready=false
-for _ in $(seq 1 "${HEALTH_RETRIES}"); do
-  if curl -fsS --max-time 5 "http://127.0.0.1:${CLOUDFLARED_METRICS_PORT:-2000}/ready" >/dev/null 2>&1; then
-    tunnel_ready=true
-    break
+if [ "${WITH_TUNNEL}" = true ]; then
+  log "checking the Cloudflare tunnel"
+  for _ in $(seq 1 "${HEALTH_RETRIES}"); do
+    if curl -fsS --max-time 5 "http://127.0.0.1:${CLOUDFLARED_METRICS_PORT:-2000}/ready" >/dev/null 2>&1; then
+      tunnel_ready=true
+      break
+    fi
+    sleep "${HEALTH_INTERVAL}"
+  done
+  if [ "${tunnel_ready}" != true ]; then
+    "${COMPOSE[@]}" logs --no-color --tail 80 cloudflared >&2 || true
+    die "cloudflared did not report a ready tunnel connection"
   fi
-  sleep "${HEALTH_INTERVAL}"
-done
-if [ "${tunnel_ready}" != true ]; then
-  "${COMPOSE[@]}" logs --no-color --tail 80 cloudflared >&2 || true
-  die "cloudflared did not report a ready tunnel connection"
+  log "Cloudflare tunnel is connected"
+else
+  log "skipping the tunnel check (--without-tunnel)"
 fi
-log "Cloudflare tunnel is connected"
 
 log "checking S3 access through the instance role"
 aws s3api head-bucket --bucket "${S3_BUCKET}" --region "${AWS_REGION}" \
   || die "HeadBucket on ${S3_BUCKET} failed; check the EC2 instance role"
 
-log "checking the public endpoint"
 public_ok=false
-for _ in $(seq 1 "${PUBLIC_HEALTH_RETRIES}"); do
-  if curl -fsS --max-time 10 "${PUBLIC_BASE_URL}/health/ready" 2>/dev/null | grep -q '"status":"ok"'; then
-    public_ok=true
-    break
-  fi
-  sleep "${HEALTH_INTERVAL}"
-done
-if [ "${public_ok}" = true ]; then
-  log "public endpoint is healthy"
-elif [ "${FIRST_DEPLOYMENT}" = true ]; then
-  # DNS or the public hostname route may not exist yet on the very first run.
-  # Everything inside the host is verified, so this is reported, not fatal.
-  warn "public endpoint ${PUBLIC_BASE_URL}/health/ready is not answering yet"
-  warn "internal API, tunnel, worker and S3 all passed; finish the Cloudflare"
-  warn "public-hostname route (docs/CLOUDFLARE_TUNNEL_SETUP.md) and re-check"
+if [ "${WITH_TUNNEL}" != true ]; then
+  log "skipping the public endpoint check (--without-tunnel)"
 else
-  die "public endpoint ${PUBLIC_BASE_URL}/health/ready failed while internal checks passed"
+  log "checking the public endpoint"
+  for _ in $(seq 1 "${PUBLIC_HEALTH_RETRIES}"); do
+    if curl -fsS --max-time 10 "${PUBLIC_BASE_URL}/health/ready" 2>/dev/null | grep -q '"status":"ok"'; then
+      public_ok=true
+      break
+    fi
+    sleep "${HEALTH_INTERVAL}"
+  done
+  if [ "${public_ok}" = true ]; then
+    log "public endpoint is healthy"
+  elif [ "${FIRST_DEPLOYMENT}" = true ]; then
+    # DNS or the public hostname route may not exist yet on the very first run.
+    # Everything inside the host is verified, so this is reported, not fatal.
+    warn "public endpoint ${PUBLIC_BASE_URL}/health/ready is not answering yet"
+    warn "internal API, tunnel, worker and S3 all passed; finish the Cloudflare"
+    warn "public-hostname route (docs/CLOUDFLARE_TUNNEL_SETUP.md) and re-check"
+  else
+    die "public endpoint ${PUBLIC_BASE_URL}/health/ready failed while internal checks passed"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -314,6 +353,7 @@ IMAGE_ID=${image_id}
 DEPLOYED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 DEPLOYED_BY=${DEPLOY_ACTOR}
 PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
+PUBLIC_INGRESS=$([ "${WITH_TUNNEL}" = true ] && echo cloudflare-tunnel || echo none)
 PUBLIC_HEALTH_VERIFIED=${public_ok}
 ROLLBACK_TARGET=${ROLLBACK_SHA}
 EOF
@@ -327,3 +367,8 @@ docker image prune -f >/dev/null 2>&1 || true
 
 "${COMPOSE[@]}" ps
 log "deployment of ${DEPLOY_SHA} completed successfully"
+if [ "${WITH_TUNNEL}" != true ]; then
+  warn "NO PUBLIC INGRESS: the stack is running but unreachable from outside"
+  warn "create the Cloudflare tunnel (docs/CLOUDFLARE_TUNNEL_SETUP.md), store"
+  warn "its token in SSM, then re-run without --without-tunnel"
+fi

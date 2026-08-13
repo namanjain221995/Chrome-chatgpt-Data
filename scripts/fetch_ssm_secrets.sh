@@ -108,8 +108,21 @@ write_secret_file pgpass "$(printf 'postgres:5432:*:%s:%s\n' "${postgres_user}" 
 # Cloudflare Tunnel token. Passed to cloudflared through an env file rather
 # than the command line, so it never appears in `docker inspect`, `ps` output
 # or container logs.
-tunnel_token="$(single_line cloudflare_tunnel_token "$(required_parameter cloudflare_tunnel_token)")"
-write_secret_file cloudflared.env "$(printf 'TUNNEL_TOKEN=%s\n' "${tunnel_token}")" 0 0400
+#
+# ALLOW_MISSING_TUNNEL is set only by `deploy_production.sh --without-tunnel`,
+# the deliberate bring-up path used before the Cloudflare tunnel exists. The
+# token is required for every normal deployment.
+tunnel_token="$(optional_parameter cloudflare_tunnel_token)"
+if [ -n "${tunnel_token}" ]; then
+  tunnel_token="$(single_line cloudflare_tunnel_token "${tunnel_token}")"
+  write_secret_file cloudflared.env "$(printf 'TUNNEL_TOKEN=%s\n' "${tunnel_token}")" 0 0400
+elif [ "${ALLOW_MISSING_TUNNEL:-false}" = "true" ]; then
+  # Remove any stale file so the tunnel cannot start with an old token.
+  rm -f "${DATA_ROOT}/secrets/cloudflared.env"
+  log "no tunnel token in SSM; continuing without public ingress as requested"
+else
+  die "required SSM parameter missing or empty: ${PARAM_PREFIX}/cloudflare_tunnel_token"
+fi
 unset tunnel_token postgres_password pgpass_password
 
 # ---------------------------------------------------------------------------

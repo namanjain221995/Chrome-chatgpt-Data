@@ -42,6 +42,13 @@ AWS_REGION="$(env_value AWS_REGION)"
 CLOUDFLARED_METRICS_PORT="$(env_value CLOUDFLARED_METRICS_PORT)"
 COMPOSE=(docker compose --env-file "${ENV_FILE}" -f compose.prod.yaml)
 
+# A bring-up deployment (--without-tunnel) records that it has no public
+# ingress. Treat the tunnel and public URL as expected-absent in that case
+# rather than reporting two failures for a deliberate state.
+RELEASE_FILE="${APP_DIR}/deploy/current-release"
+PUBLIC_INGRESS="$(sed -n 's/^PUBLIC_INGRESS=//p' "${RELEASE_FILE}" 2>/dev/null | tail -1)"
+PUBLIC_INGRESS="${PUBLIC_INGRESS:-cloudflare-tunnel}"
+
 echo "Production verification"
 echo "======================="
 
@@ -72,7 +79,9 @@ state() {
   docker inspect -f '{{.State.Status}}' "${id}" 2>/dev/null || printf 'unknown'
 }
 
-for service in postgres api worker cloudflared backup; do
+required_services=(postgres api worker backup)
+[ "${PUBLIC_INGRESS}" = "cloudflare-tunnel" ] && required_services+=(cloudflared)
+for service in "${required_services[@]}"; do
   status="$(state "${service}")"
   if [ "${status}" = "running" ]; then
     pass "${service} container is running"
@@ -138,18 +147,31 @@ else
 fi
 
 # --- Cloudflare tunnel -----------------------------------------------------
-if curl -fsS --max-time 5 "http://127.0.0.1:${CLOUDFLARED_METRICS_PORT:-2000}/ready" >/dev/null 2>&1; then
-  pass "cloudflared reports a ready tunnel connection"
+if [ "${PUBLIC_INGRESS}" != "cloudflare-tunnel" ]; then
+  warn "this host was deployed with --without-tunnel: there is NO public ingress"
+  warn "create the tunnel, store its token in SSM, and redeploy without the flag"
+  if [ "$(state cloudflared)" = "running" ]; then
+    fail "cloudflared is running although the release records no public ingress"
+  fi
 else
-  fail "cloudflared /ready did not answer on 127.0.0.1:${CLOUDFLARED_METRICS_PORT:-2000}"
+  if curl -fsS --max-time 5 "http://127.0.0.1:${CLOUDFLARED_METRICS_PORT:-2000}/ready" >/dev/null 2>&1; then
+    pass "cloudflared reports a ready tunnel connection"
+  else
+    fail "cloudflared /ready did not answer on 127.0.0.1:${CLOUDFLARED_METRICS_PORT:-2000}"
+  fi
+
+  if [ -n "${PUBLIC_BASE_URL}" ]; then
+    if curl -fsS --max-time 15 "${PUBLIC_BASE_URL}/health/ready" 2>/dev/null | grep -q '"status":"ok"'; then
+      pass "public endpoint ${PUBLIC_BASE_URL}/health/ready"
+    else
+      fail "public endpoint ${PUBLIC_BASE_URL}/health/ready failed"
+    fi
+  fi
 fi
 
-if [ -n "${PUBLIC_BASE_URL}" ]; then
-  if curl -fsS --max-time 15 "${PUBLIC_BASE_URL}/health/ready" 2>/dev/null | grep -q '"status":"ok"'; then
-    pass "public endpoint ${PUBLIC_BASE_URL}/health/ready"
-  else
-    fail "public endpoint ${PUBLIC_BASE_URL}/health/ready failed"
-  fi
+# A placeholder OIDC client id means the stack runs but nobody can sign in.
+if [ "$(env_value OIDC_CLIENT_ID)" = "pending-oidc-configuration" ]; then
+  warn "OIDC_CLIENT_ID is still the bootstrap placeholder; employee sign-in will fail"
 fi
 
 # --- Network exposure ------------------------------------------------------
@@ -224,7 +246,7 @@ else
 fi
 
 # --- Release identity ------------------------------------------------------
-release_file="${APP_DIR}/deploy/current-release"
+release_file="${RELEASE_FILE}"
 if [ -f "${release_file}" ]; then
   release_sha="$(sed -n 's/^GIT_SHA=//p' "${release_file}" | tail -1)"
   checkout_sha="$(git -C "${APP_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)"
