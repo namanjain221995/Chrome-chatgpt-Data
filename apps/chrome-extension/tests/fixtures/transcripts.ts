@@ -17,8 +17,19 @@ export interface FixtureOptions {
 function workspaceChrome(options: FixtureOptions): string {
   const parts: string[] = [];
   if (options.workspaceLabel !== null) {
+    const label = options.workspaceLabel ?? "TechSara's Workspace";
+    // Sanitized copy of the live sidebar structure (verified 2026-08): the
+    // name is a `div.truncate` nested in the profile button, and a collapsed
+    // icon-only button with the same testid precedes it in the DOM. The
+    // adapter must reach the second button's label, so the empty twin stays
+    // in the fixture as a regression trap.
     parts.push(
-      `<div data-testid="workspace-name">${options.workspaceLabel ?? "TechSara's Workspace"}</div>`,
+      '<div data-testid="accounts-profile-button"></div>' +
+        `<div data-testid="accounts-profile-button" aria-label="${label} Enterprise, open profile menu">` +
+        '<div class="flex min-w-0 items-center gap-2"><div class="min-w-0">' +
+        '<div class="flex min-w-0 grow items-center gap-2.5">' +
+        `<div class="truncate">${label}</div>` +
+        '</div></div></div></div>',
     );
   }
   if (options.workspaceId) {

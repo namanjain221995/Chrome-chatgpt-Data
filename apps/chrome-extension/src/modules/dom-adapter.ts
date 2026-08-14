@@ -24,6 +24,7 @@ import type {
   WorkspaceObservation,
 } from '../shared/types';
 import { ADAPTER_VERSION, normalizeWhitespace } from '../shared/util';
+import { sanitizeHtml } from './message-normalizer';
 
 export const ADAPTER_ID = 'chatgpt-dom-adapter';
 export { ADAPTER_VERSION };
@@ -52,6 +53,12 @@ export const SELECTORS = {
     'header h1',
   ],
   workspaceLabel: [
+    // Verified against the live product (2026-08): the workspace name is a
+    // `div.truncate` inside the sidebar profile button. Two buttons with this
+    // testid exist -- a collapsed icon-only one first -- and only the expanded
+    // one has a `.truncate` descendant, so this descendant selector lands on
+    // the right button without needing :has().
+    '[data-testid="accounts-profile-button"] div.truncate',
     '[data-testid="workspace-name"]',
     '[data-testid="accounts-profile-button"] [data-workspace-name]',
     '[data-workspace-name]',
@@ -94,7 +101,6 @@ const FORBIDDEN_CONTAINERS = [
   'input',
   '[contenteditable="true"]',
   '[data-testid="prompt-textarea"]',
-  'form',
 ];
 
 function firstMatch(root: ParentNode, selectors: readonly string[]): Element | null {
@@ -114,7 +120,21 @@ function allMatches(root: ParentNode, selectors: readonly string[]): Element[] {
 }
 
 function isInsideComposer(element: Element): boolean {
-  return FORBIDDEN_CONTAINERS.some((selector) => element.closest(selector) !== null);
+  if (FORBIDDEN_CONTAINERS.some((selector) => element.closest(selector) !== null)) {
+    return true;
+  }
+  // A `form` ancestor is composer evidence only when that form wraps input
+  // widgets and NOT the transcript. The app may nest large parts of the page
+  // -- rendered message turns included -- inside a form, and the previous
+  // bare `closest('form')` test silently dropped every message on the page
+  // while the standalone composer form kept its own protection anyway via
+  // the widget selectors above.
+  const form = element.closest('form');
+  if (!form) return false;
+  const wrapsWidget = form.querySelector(FORBIDDEN_CONTAINERS.join(', ')) !== null;
+  const wrapsTranscript =
+    form.querySelector('[data-testid^="conversation-turn"], [data-message-id]') !== null;
+  return wrapsWidget && !wrapsTranscript;
 }
 
 export function extractConversationId(url: string): string | null {
@@ -164,7 +184,15 @@ export function observeWorkspace(doc: Document): WorkspaceObservation {
   const personalNode = firstMatch(doc, SELECTORS.personalWorkspaceMarker);
   const looksPersonal = personalNode !== null;
 
-  if (doc.querySelector('[data-testid="enterprise-badge"], [data-managed-account="true"]')) {
+  if (
+    doc.querySelector(
+      '[data-testid="enterprise-badge"], [data-managed-account="true"], ' +
+        // Live product: the profile button's aria-label reads
+        // "<workspace> Enterprise, open profile menu". "Enterprise" is the
+        // plan's product name and is not localised.
+        '[data-testid="accounts-profile-button"][aria-label*="Enterprise"]',
+    )
+  ) {
     signals.push('enterprise_workspace_marker');
   }
   if (/\/g\/g-/.test(doc.location?.pathname ?? '')) {
@@ -482,9 +510,11 @@ export function extractMessage(
     role,
     domIndex,
     text,
-    // The raw HTML is passed through the sanitizer before it ever leaves the
-    // page; it is never assigned back into the DOM.
-    html: body.innerHTML ?? null,
+    // Sanitised HERE, in the content script, because this is the last place
+    // that has a DOMParser: the MV3 service worker the payload travels to has
+    // none, and raw page HTML must never leave the page anyway. Never
+    // assigned back into the DOM.
+    html: sanitizeHtml(body.innerHTML ?? null),
     parts,
     citations: readCitations(body),
     attachmentRefs: readAttachments(element, conversationId),

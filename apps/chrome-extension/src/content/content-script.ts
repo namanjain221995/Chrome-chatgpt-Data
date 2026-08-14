@@ -220,18 +220,24 @@ async function onConversationChanged(conversationId: string | null): Promise<voi
 // Bootstrap
 // ---------------------------------------------------------------------------
 
-async function bootstrap(): Promise<void> {
-  const response = await send<RuntimeConfig>({
-    type: 'CONTENT_READY',
-    url: window.location.href,
-  });
-  config = (response.data as RuntimeConfig | null) ?? null;
+let active = false;
 
+/**
+ * Start observing, if the current config verifies this workspace.
+ *
+ * Called from bootstrap AND whenever the worker pushes fresh configuration:
+ * a tab opened before the employee signed in fails verification here (the
+ * anonymous config carries no workspace rules), and must come alive the
+ * moment the signed-in config arrives -- not on the next manual page reload.
+ */
+function tryActivate(): void {
+  if (active) return;
   const { ok, message } = verify();
   if (!ok) {
     log.info('content_inactive', { reason: message });
     return;
   }
+  active = true;
 
   routeObserver = new RouteObserver(window);
   routeObserver.onChange((change) => {
@@ -240,7 +246,7 @@ async function bootstrap(): Promise<void> {
   routeObserver.start();
 
   startAttachmentObserver();
-  await onConversationChanged(routeObserver.conversationId);
+  void onConversationChanged(routeObserver.conversationId);
 
   // A closing tab must not silently drop a half-streamed answer.
   window.addEventListener('pagehide', () => liveObserver?.flushPartial(), { once: false });
@@ -249,6 +255,15 @@ async function bootstrap(): Promise<void> {
   });
 
   log.info('content_active', { conversationId: currentConversationId });
+}
+
+async function bootstrap(): Promise<void> {
+  const response = await send<RuntimeConfig>({
+    type: 'CONTENT_READY',
+    url: window.location.href,
+  });
+  config = (response.data as RuntimeConfig | null) ?? null;
+  tryActivate();
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -262,6 +277,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (request.type === 'REFRESH_CONFIG') {
     void send<RuntimeConfig>({ type: 'GET_CONFIG' }).then((response) => {
       config = (response.data as RuntimeConfig | null) ?? null;
+      // A tab that parked itself as inactive gets another chance whenever
+      // fresh configuration arrives (e.g. the employee just signed in).
+      tryActivate();
       sendResponse({ ok: true });
     });
     return true;

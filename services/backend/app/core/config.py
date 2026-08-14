@@ -268,11 +268,11 @@ class Settings(BaseSettings):
         origins.extend(self.admin_origin_list)
         return origins
 
-    @property
-    def jwks_url(self) -> str:
-        if self.oidc_jwks_url:
-            return self.oidc_jwks_url
-        return self.oidc_issuer.rstrip("/") + "/.well-known/jwks.json"
+    # There is deliberately no `jwks_url` fallback here. Guessing
+    # `<issuer>/.well-known/jwks.json` is wrong for Google -- its jwks_uri is
+    # on another host, so the guess 404s and every sign-in fails. The key
+    # location is read from the provider's discovery document by
+    # `app.core.security.discover_jwks_uri`; `OIDC_JWKS_URL` overrides it.
 
     @property
     def is_production(self) -> bool:

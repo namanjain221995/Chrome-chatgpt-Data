@@ -92,6 +92,20 @@ describe('message extraction', () => {
     expect(everything).not.toContain('must never be captured');
   });
 
+  it('still extracts a transcript that the app nests inside a page-level form', () => {
+    // Regression: the live product can wrap rendered turns in a <form>. A bare
+    // closest('form') exclusion dropped every message on the page while the
+    // composer keeps its own protection through the widget selectors.
+    const doc = loadFixture(
+      `<form data-page-wrapper="true">${basicTranscript()}</form>`,
+    );
+    const conversation = extractConversation(doc, CONVERSATION_URL);
+    expect(conversation.messages.length).toBeGreaterThan(0);
+    const everything = JSON.stringify(conversation);
+    expect(everything).not.toContain('DRAFT');
+    expect(everything).not.toContain('must never be captured');
+  });
+
   it('preserves code blocks with their language', () => {
     const doc = loadFixture(basicTranscript());
     const assistant = extractConversation(doc, CONVERSATION_URL).messages[1];

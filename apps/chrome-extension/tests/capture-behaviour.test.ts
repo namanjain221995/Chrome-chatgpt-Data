@@ -524,6 +524,29 @@ describe('message normalisation', () => {
     expect(a.idempotency_key).toBe(b.idempotency_key);
   });
 
+  it('normalizes messages in a worker-like environment with no DOMParser', async () => {
+    // Regression: MV3 service workers have no DOMParser. sanitizeHtml threw
+    // ReferenceError inside normalizeMessages, killing every message batch
+    // after patchStatus and before enqueue -- so no message ever reached the
+    // backend. HTML is sanitised at extraction now; the normalizer must pass
+    // it through untouched when it has no parser to re-run the allowlist.
+    document.body.innerHTML = basicTranscript();
+    const messages = extractConversation(document, CONVERSATION_URL).messages;
+    expect(messages.length).toBeGreaterThan(0);
+
+    const savedParser = globalThis.DOMParser;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    delete (globalThis as any).DOMParser;
+    try {
+      const payloads = await normalizeMessages(messages, CONVERSATION_ID);
+      expect(payloads).toHaveLength(messages.length);
+      // Extraction already sanitised the html, so it survives the passthrough.
+      expect(payloads[0]?.sanitized_html).toBe(messages[0]?.html);
+    } finally {
+      globalThis.DOMParser = savedParser;
+    }
+  });
+
   it('keeps the key stable when the sequence index shifts after a backfill', async () => {
     document.body.innerHTML = basicTranscript();
     const [message] = extractConversation(document, CONVERSATION_URL).messages;

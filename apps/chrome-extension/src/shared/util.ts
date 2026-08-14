@@ -3,7 +3,7 @@
 import type { ClientContext } from './types';
 import { SCHEMA_VERSION } from './types';
 
-export const ADAPTER_VERSION = '2024.1';
+export const ADAPTER_VERSION = '2026.1';
 
 /**
  * SHA-256 as lowercase hex, using Web Crypto (available in MV3 workers).

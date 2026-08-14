@@ -143,7 +143,13 @@ export async function normalizeMessage(
     role: message.role,
     sequence_index: Math.max(0, options.sequenceIndex),
     text,
-    sanitized_html: sanitizeHtml(message.html),
+    // HTML is sanitised at extraction time by the content script, which is
+    // the last environment with a DOMParser. MV3 service workers have none,
+    // and calling sanitizeHtml there throws ReferenceError -- which silently
+    // killed every message batch before this guard existed. Re-run the
+    // allowlist only where a parser exists (tests, content-script callers).
+    sanitized_html:
+      typeof DOMParser === 'undefined' ? (message.html ?? null) : sanitizeHtml(message.html),
     parts: boundParts(message.parts),
     citations: message.citations.slice(0, 100),
     completion_status: options.completionStatus ?? (message.isStreaming ? 'partial' : 'complete'),

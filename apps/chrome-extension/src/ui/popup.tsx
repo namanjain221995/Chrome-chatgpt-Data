@@ -141,11 +141,20 @@ function Popup(): JSX.Element {
         font: '13px/1.45 system-ui, -apple-system, sans-serif',
       }}
     >
-      <header style={{ marginBottom: 10 }}>
-        <h1 style={{ fontSize: 14, margin: 0 }}>TechSara ChatGPT Archive</h1>
-        <p style={{ margin: '4px 0 0', fontSize: 11, color: palette.muted }}>
-          Company-managed archive of approved workspace conversations.
-        </p>
+      <header style={{ marginBottom: 10, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+        <img
+          src="icons/icon-48.png"
+          alt=""
+          width={28}
+          height={28}
+          style={{ flexShrink: 0, marginTop: 1 }}
+        />
+        <div>
+          <h1 style={{ fontSize: 14, margin: 0 }}>TechSara ChatGPT Archive</h1>
+          <p style={{ margin: '4px 0 0', fontSize: 11, color: palette.muted }}>
+            Company-managed archive of approved workspace conversations.
+          </p>
+        </div>
       </header>
 
       {status.policyBlockReason && (

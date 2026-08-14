@@ -23,6 +23,9 @@ from jwt import PyJWKClient
 from app.core.config import Settings, get_settings
 from app.core.crypto import sha256_hex
 from app.core.errors import AuthenticationError, AuthorizationError
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 ACCESS_TOKEN_TYPE = "access"  # noqa: S105 - claim value, not a secret
 REFRESH_TOKEN_BYTES = 48
@@ -197,7 +200,7 @@ class OIDCVerifier:
         now = time.monotonic()
         if self._jwk_client is None or now - self._jwk_client_created_at > JWKS_CACHE_TTL_SECONDS:
             self._jwk_client = PyJWKClient(
-                self._settings.jwks_url,
+                discover_jwks_uri(self._settings),
                 cache_keys=True,
                 lifespan=JWKS_CACHE_TTL_SECONDS,
                 timeout=10,
@@ -227,6 +230,15 @@ class OIDCVerifier:
         except jwt.ExpiredSignatureError as exc:
             raise AuthenticationError("ID token expired") from exc
         except jwt.InvalidTokenError as exc:
+            # PyJWT raises a distinct subclass per failure -- InvalidSignature,
+            # InvalidIssuer, InvalidAudience, MissingRequiredClaim. Collapsing
+            # them into one message makes a 401 undiagnosable. The subclass
+            # name and PyJWT's own text carry no token material.
+            logger.warning(
+                "oidc_id_token_invalid",
+                error_type=type(exc).__name__,
+                error=str(exc)[:200],
+            )
             raise AuthenticationError("ID token verification failed") from exc
 
         return identity_from_claims(claims, settings, expected_nonce)
@@ -236,6 +248,15 @@ def identity_from_claims(
     claims: dict[str, Any], settings: Settings, expected_nonce: str | None
 ) -> VerifiedIdentity:
     if expected_nonce is not None and claims.get("nonce") != expected_nonce:
+        # Distinguish "the client lost its nonce" from "the client sent a
+        # different one" -- a retry that overwrote stored state looks nothing
+        # like a replay attack, but both land here. Presence only: never the
+        # values.
+        logger.warning(
+            "oidc_nonce_mismatch",
+            token_nonce_present=bool(claims.get("nonce")),
+            expected_nonce_present=bool(expected_nonce),
+        )
         raise AuthenticationError("ID token nonce mismatch")
 
     email = str(claims.get("email", "")).strip().lower()
@@ -288,7 +309,24 @@ async def exchange_authorization_code(
     async with httpx.AsyncClient(timeout=15) as client:
         response = await client.post(token_endpoint, data=data)
     if response.status_code >= 400:
-        # Never log or echo the provider body: it can contain the code.
+        # Never log or echo the provider body: it can contain the code. The
+        # OAuth `error` and `error_description` fields are defined by
+        # RFC 6749 5.2 and carry no credential, so logging those two -- and
+        # only those two -- is safe and is the only way to diagnose a
+        # rejected exchange without replaying the flow.
+        try:
+            payload = response.json()
+            provider_error = str(payload.get("error", ""))[:64]
+            provider_detail = str(payload.get("error_description", ""))[:200]
+        except ValueError:
+            provider_error = ""
+            provider_detail = ""
+        logger.warning(
+            "oidc_exchange_rejected",
+            status=response.status_code,
+            provider_error=provider_error or "unparseable",
+            provider_error_description=provider_detail,
+        )
         raise AuthenticationError("Identity provider rejected the authorization code")
     return response.json()
 
@@ -296,11 +334,48 @@ async def exchange_authorization_code(
 _DISCOVERY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
-async def _discover_token_endpoint(settings: Settings) -> str:
-    issuer = settings.oidc_issuer.rstrip("/")
+def _cached_discovery(issuer: str) -> dict[str, Any] | None:
     cached = _DISCOVERY_CACHE.get(issuer)
     if cached and time.monotonic() - cached[0] < JWKS_CACHE_TTL_SECONDS:
-        return str(cached[1]["token_endpoint"])
+        return cached[1]
+    return None
+
+
+def discover_jwks_uri(settings: Settings) -> str:
+    """Where the provider says its signing keys live.
+
+    Ask, never guess. Appending the conventional
+    ``<issuer>/.well-known/jwks.json`` is wrong for Google, whose ``jwks_uri``
+    is on a different host entirely -- that guess 404s and every sign-in then
+    fails with "Unable to resolve ID token signing key".
+
+    ``OIDC_JWKS_URL`` still wins when set, for an air-gapped or mirrored
+    provider. This is a blocking call by design: it is reached from the
+    synchronous verifier, which already performs blocking network I/O inside
+    :class:`PyJWKClient`, and the result is cached for the JWKS TTL.
+    """
+    if settings.oidc_jwks_url:
+        return settings.oidc_jwks_url
+
+    issuer = settings.oidc_issuer.rstrip("/")
+    doc = _cached_discovery(issuer)
+    if doc is None:
+        response = httpx.get(f"{issuer}/.well-known/openid-configuration", timeout=10)
+        if response.status_code >= 400:
+            raise AuthenticationError("Unable to load identity provider metadata")
+        doc = response.json()
+        _DISCOVERY_CACHE[issuer] = (time.monotonic(), doc)
+    jwks_uri = doc.get("jwks_uri")
+    if not jwks_uri:
+        raise AuthenticationError("Identity provider metadata has no jwks_uri")
+    return str(jwks_uri)
+
+
+async def _discover_token_endpoint(settings: Settings) -> str:
+    issuer = settings.oidc_issuer.rstrip("/")
+    cached = _cached_discovery(issuer)
+    if cached is not None:
+        return str(cached["token_endpoint"])
     url = f"{issuer}/.well-known/openid-configuration"
     async with httpx.AsyncClient(timeout=10) as client:
         response = await client.get(url)

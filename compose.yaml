@@ -22,7 +22,16 @@ x-app-env: &app-env
   S3_ENDPOINT_URL: ""
   S3_USE_PATH_STYLE: "false"
   OIDC_ISSUER: ${OIDC_ISSUER:-https://accounts.google.com}
+  # Without this the verifier falls back to <issuer>/.well-known/jwks.json,
+  # which 404s for Google -- its jwks_uri lives on www.googleapis.com. Every
+  # sign-in then fails with "Unable to resolve ID token signing key".
+  OIDC_JWKS_URL: ${OIDC_JWKS_URL:-}
   OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-replace-me}
+  # Google treats the extension's client as *confidential*, so the
+  # authorization-code exchange fails with "client_secret is missing" without
+  # this. Production supplies it as OIDC_CLIENT_SECRET_FILE from SSM; locally
+  # it comes from .env and is empty until a developer configures sign-in.
+  OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
   OIDC_REQUIRED_HD: ${OIDC_REQUIRED_HD:-example.com}
   ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS:-example.com}
   EXTENSION_IDS: ${EXTENSION_IDS:-}

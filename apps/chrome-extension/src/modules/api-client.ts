@@ -51,7 +51,7 @@ export class ApiClient {
 
   private async request<T>(
     path: string,
-    init: RequestInit & { authenticated?: boolean } = {},
+    init: RequestInit & { authenticated?: boolean | 'optional' } = {},
   ): Promise<T> {
     const { authenticated = true, ...rest } = init;
     const headers = new Headers(rest.headers ?? {});
@@ -61,8 +61,13 @@ export class ApiClient {
 
     if (authenticated) {
       const token = await this.options.getAccessToken();
-      if (!token) throw new ApiError('Not signed in', 401, 'unauthenticated', false);
-      headers.set('Authorization', `Bearer ${token}`);
+      // `'optional'` is for endpoints that answer both anonymous and
+      // signed-in callers, with a different document for each: send the token
+      // when there is one, but never fail for want of it.
+      if (!token && authenticated !== 'optional') {
+        throw new ApiError('Not signed in', 401, 'unauthenticated', false);
+      }
+      if (token) headers.set('Authorization', `Bearer ${token}`);
     }
 
     const controller = new AbortController();
@@ -128,9 +133,15 @@ export class ApiClient {
   // -- endpoints ----------------------------------------------------------
 
   async getConfig(): Promise<SignedRuntimeConfig> {
+    // The server releases the managed workspace label and id allowlist only to
+    // an authenticated caller, and the workspace verifier refuses to verify
+    // anything without them. Asking anonymously while signed in therefore
+    // leaves capture permanently disabled -- so send the token when we have
+    // one. The endpoint still answers anonymous callers with the public
+    // document, which is what an unauthenticated start-up needs.
     return this.request<SignedRuntimeConfig>('/api/v1/config', {
       method: 'GET',
-      authenticated: false,
+      authenticated: 'optional',
     });
   }
 

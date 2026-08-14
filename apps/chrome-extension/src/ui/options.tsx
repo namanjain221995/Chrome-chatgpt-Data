@@ -77,7 +77,18 @@ function Options(): JSX.Element {
         minHeight: '100vh',
       }}
     >
-      <h1 style={{ fontSize: 18, marginTop: 0 }}>TechSara ChatGPT Archive</h1>
+      <h1
+        style={{
+          fontSize: 18,
+          marginTop: 0,
+          display: 'flex',
+          gap: 10,
+          alignItems: 'center',
+        }}
+      >
+        <img src="icons/icon-48.png" alt="" width={32} height={32} />
+        TechSara ChatGPT Archive
+      </h1>
 
       <Section
         title="Historical Archive Progress"

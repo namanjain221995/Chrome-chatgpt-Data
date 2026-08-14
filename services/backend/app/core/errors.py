@@ -122,10 +122,13 @@ def register_exception_handlers(app: FastAPI) -> None:
         retry_after = getattr(exc, "retry_after", None)
         if retry_after is not None:
             headers["Retry-After"] = str(retry_after)
+        # `message` is already returned to the caller in the response body, so
+        # logging it discloses nothing further -- and without it a 401 is
+        # indistinguishable from any other 401 when reading production logs.
         if exc.status_code >= 500:
-            logger.error("app_error", code=exc.code, status=exc.status_code)
+            logger.error("app_error", code=exc.code, status=exc.status_code, reason=exc.message)
         else:
-            logger.info("app_error", code=exc.code, status=exc.status_code)
+            logger.info("app_error", code=exc.code, status=exc.status_code, reason=exc.message)
         return JSONResponse(
             status_code=exc.status_code,
             content=_error_body(exc.code, exc.message, exc.details),

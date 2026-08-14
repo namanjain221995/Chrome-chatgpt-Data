@@ -18,7 +18,15 @@ final.
 
 **It does not archive unsent text.** Anything typed in the composer and never
 sent is never read. The parser refuses to look inside `textarea`,
-`contenteditable`, `input` or `form` elements at all.
+`contenteditable` or `input` elements, or inside any `form` that wraps such a
+widget without also wrapping the transcript.
+
+That last clause is deliberate and was learned the hard way. The rule used to
+be "never read anything inside any `form`". ChatGPT nests the rendered
+transcript inside a form, so that rule silently discarded **every** message
+while still appearing to work -- the archive stayed empty and nothing reported
+an error. Drafts remain unreachable, because the composer is excluded by the
+widget selectors themselves, not by the shape of its ancestors.
 
 **It cannot guarantee that every old conversation is archived.** A browser
 extension only sees what the browser renders. Conversations you never open in
@@ -49,7 +57,7 @@ the bytes, the archive stores metadata and says so
 | Message order | `sequence_index` | Authoritative after a backfill |
 | Message timestamps | `time[datetime]` when present | Null when the page exposes none |
 | Code, headings, lists, tables, links | `message_parts` | Language, cells and hierarchy preserved |
-| Sanitized rich text | `sanitized_html` | Allowlist-sanitised twice: client and server |
+| Sanitized rich text | `sanitized_html` | Allowlist-sanitised in the content script at extraction, then again server-side. Raw page HTML never leaves the page |
 | Edited prompts | New `message_versions` row | The original version is never overwritten |
 | Regenerated answers | New `message_versions` row | Both variants retained |
 | Branch relationships | `conversation_branches` | Only when the page shows a counter such as "2 / 3" |

@@ -189,6 +189,12 @@ async function signIn(): Promise<RuntimeResponse> {
     await auth.clearPkce();
     await persistTokens(tokens);
     await registerDevice(api);
+    // Signing in is what unlocks the workspace rules in the runtime
+    // configuration, so the cached anonymous copy is stale the moment we hold
+    // a token. Without this the workspace stays unverified until the ten
+    // minute config alarm happens to fire.
+    await loadConfig(true);
+    await broadcastConfigToTabs();
     await patchStatus({ signedIn: true, email: String(tokens.email ?? ''), lastSyncError: null });
     return { ok: true, data: { email: tokens.email } };
   } catch (error) {
@@ -360,6 +366,7 @@ async function handleMessage(message: RuntimeMessage): Promise<RuntimeResponse> 
     case 'REFRESH_CONFIG': {
       const config = await loadConfig(true);
       await refreshRemoteStatus();
+      await broadcastConfigToTabs();
       return { ok: true, data: config };
     }
     case 'SIGN_IN':
@@ -486,7 +493,9 @@ chrome.runtime.onStartup.addListener(() => {
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === FLUSH_ALARM) void flushNow();
   if (alarm.name === CONFIG_ALARM) {
-    void loadConfig(true).then(() => refreshRemoteStatus());
+    void loadConfig(true)
+      .then(() => refreshRemoteStatus())
+      .then(() => broadcastConfigToTabs());
   }
 });
 
@@ -494,6 +503,30 @@ if (typeof self !== 'undefined' && 'addEventListener' in self) {
   self.addEventListener('online', () => {
     void flushNow();
   });
+}
+
+/**
+ * Tell every open ChatGPT tab that the configuration changed.
+ *
+ * A content script that failed workspace verification parks itself and never
+ * polls; this push is what revives it. Best-effort by design: a tab whose
+ * content script is gone (or was never injected) rejects, and that is fine.
+ */
+async function broadcastConfigToTabs(): Promise<void> {
+  try {
+    const tabs = await chrome.tabs.query({
+      url: ['https://chatgpt.com/*', 'https://chat.openai.com/*'],
+    });
+    await Promise.allSettled(
+      tabs.map((tab) =>
+        tab.id === undefined
+          ? Promise.resolve()
+          : chrome.tabs.sendMessage(tab.id, { type: 'REFRESH_CONFIG' }),
+      ),
+    );
+  } catch (error) {
+    log.debug('config_broadcast_failed', { reason: safeErrorMessage(error) });
+  }
 }
 
 async function bootstrap(): Promise<void> {
